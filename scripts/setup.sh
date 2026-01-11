@@ -163,13 +163,30 @@ cp "$SCRIPT_DIR/start-ap.sh" /usr/local/bin/vpn-ap-start
 cp "$SCRIPT_DIR/start-vpn.sh" /usr/local/bin/vpn-start
 cp "$SCRIPT_DIR/switch-upstream.sh" /usr/local/bin/vpn-ap-switch
 cp "$SCRIPT_DIR/captive-portal.sh" /usr/local/bin/captive-portal
+cp "$SCRIPT_DIR/emergency-recovery.sh" /usr/local/bin/vpn-ap-emergency
+cp "$SCRIPT_DIR/watchdog.sh" /usr/local/bin/vpn-ap-watchdog
+cp "$SCRIPT_DIR/iptables-captive-mode.sh" /usr/local/bin/
+cp "$SCRIPT_DIR/iptables-internet-mode.sh" /usr/local/bin/
+cp "$SCRIPT_DIR/iptables-vpn-mode.sh" /usr/local/bin/
 chmod +x /usr/local/bin/vpn-ap-*
 chmod +x /usr/local/bin/vpn-start
 chmod +x /usr/local/bin/captive-portal
+chmod +x /usr/local/bin/iptables-*.sh
 
-# Install systemd service
+# Create state directory for recovery
+mkdir -p /var/lib/vpn-ap
+chown root:root /var/lib/vpn-ap
+
+# Install systemd services
 cp "$PROJECT_DIR/systemd/vpn-ap.service" /etc/systemd/system/
+cp "$PROJECT_DIR/systemd/captive-portal.service" /etc/systemd/system/
+cp "$PROJECT_DIR/systemd/vpn-ap-watchdog.service" /etc/systemd/system/
+cp "$PROJECT_DIR/systemd/vpn-ap-watchdog.timer" /etc/systemd/system/
 systemctl daemon-reload
+
+# Enable watchdog timer for auto-recovery
+systemctl enable vpn-ap-watchdog.timer
+systemctl start vpn-ap-watchdog.timer
 
 echo ""
 echo -e "${GREEN}================================${NC}"
@@ -202,4 +219,13 @@ echo "  sudo systemctl status vpn-ap    # Check status"
 echo "  sudo vpn-ap-start               # Manually start AP"
 echo "  sudo vpn-start                  # Manually start VPN"
 echo "  sudo captive-portal             # Bypass VPN for hotel login"
+echo ""
+echo "Emergency recovery:"
+echo "  sudo vpn-ap-emergency full      # Full recovery if locked out"
+echo "  http://192.168.4.1/emergency    # Web-based emergency recovery"
+echo "  SSH always available on port 22"
+echo ""
+echo "Automatic monitoring:"
+echo "  Watchdog runs every minute to auto-recover services"
+echo "  State is persisted for recovery after reboots"
 echo ""

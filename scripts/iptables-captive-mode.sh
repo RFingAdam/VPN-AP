@@ -1,8 +1,10 @@
 #!/bin/bash
 # Captive Portal Mode - Restrictive iptables that only allows portal access
 # Used on boot before VPN is connected
+# SAFETY: SSH is always allowed on ALL interfaces to prevent lockout
 
 AP_IF="${AP_IF:-wlan1}"
+UPSTREAM_IF="${UPSTREAM_IF:-wlan0}"
 AP_IP="192.168.4.1"
 AP_SUBNET="192.168.4.0/24"
 
@@ -26,6 +28,10 @@ iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
+# === CRITICAL: SSH on ALL interfaces (prevent lockout) ===
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+iptables -A OUTPUT -p tcp --sport 22 -j ACCEPT
+
 # === AP Interface - Allow portal services ===
 
 # DHCP server
@@ -41,9 +47,6 @@ iptables -A OUTPUT -o $AP_IF -p tcp --sport 53 -j ACCEPT
 # HTTP (captive portal web interface)
 iptables -A INPUT -i $AP_IF -p tcp --dport 80 -j ACCEPT
 iptables -A OUTPUT -o $AP_IF -p tcp --sport 80 -j ACCEPT
-
-# SSH (for management)
-iptables -A INPUT -i $AP_IF -p tcp --dport 22 -j ACCEPT
 
 # Ping
 iptables -A INPUT -i $AP_IF -p icmp --icmp-type echo-request -j ACCEPT

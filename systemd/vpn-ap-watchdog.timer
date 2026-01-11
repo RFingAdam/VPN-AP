@@ -1,0 +1,11 @@
+[Unit]
+Description=VPN-AP Watchdog Timer - Runs every minute
+Requires=vpn-ap-watchdog.service
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
