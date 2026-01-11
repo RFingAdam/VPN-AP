@@ -392,18 +392,21 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
             success, msg = connect_vpn()
             if success:
                 content += '<div class="message success">VPN Connected!</div>'
-                # Set up AP forwarding
-                run_cmd("sysctl -w net.ipv4.ip_forward=1")
-                vpn_if, _ = run_cmd("ip link show | grep -oE 'nordlynx[0-9]*' | head -1")
-                if vpn_if:
-                    run_cmd(f"iptables -t nat -A POSTROUTING -s 192.168.4.0/24 -o {vpn_if} -j MASQUERADE")
-                    run_cmd(f"iptables -I FORWARD 1 -i wlan1 -o {vpn_if} -j ACCEPT")
-                    run_cmd(f"iptables -I FORWARD 2 -i {vpn_if} -o wlan1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+                # Remove DNS redirect so clients can access the internet
+                remove_dns_redirect()
+                # Set up VPN kill switch firewall
+                if setup_vpn_mode_firewall():
+                    content += '<div class="message success">Kill switch enabled - traffic protected!</div>'
+                else:
+                    content += '<div class="message error">Warning: Could not enable kill switch</div>'
             else:
                 content += f'<div class="message error">Failed: {html.escape(msg)}</div>'
         else:
             disconnect_vpn()
-            content += '<div class="message info">VPN Disconnected</div>'
+            # Re-enable captive portal mode
+            setup_dns_redirect()
+            setup_captive_mode_firewall()
+            content += '<div class="message info">VPN Disconnected - captive portal mode restored</div>'
 
         content += '<a href="/"><button>Back to Home</button></a>'
         content += '</div>'
@@ -429,6 +432,43 @@ def setup_dns_redirect():
         print(f"Warning: Could not configure DNS redirect: {e}")
 
 
+def find_script(name):
+    """Find script in known locations"""
+    paths = [
+        f"/usr/local/bin/{name}",
+        f"/home/pi/VPN-AP/scripts/{name}",
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def setup_captive_mode_firewall():
+    """Set up restrictive firewall for captive portal mode"""
+    script = find_script("iptables-captive-mode.sh")
+    if script:
+        subprocess.run(["bash", script], check=False)
+    else:
+        print("Warning: iptables-captive-mode.sh not found")
+
+
+def setup_vpn_mode_firewall():
+    """Set up VPN kill switch firewall"""
+    script = find_script("iptables-vpn-mode.sh")
+    if script:
+        result = subprocess.run(["bash", script], capture_output=True, text=True)
+        if result.returncode == 0:
+            print("VPN kill switch firewall activated")
+            return True
+        else:
+            print(f"Failed to set up VPN firewall: {result.stderr}")
+            return False
+    else:
+        print("Warning: iptables-vpn-mode.sh not found")
+        return False
+
+
 def remove_dns_redirect():
     """Remove captive portal DNS redirect"""
     dnsmasq_conf = "/etc/dnsmasq.d/captive-portal.conf"
@@ -443,8 +483,16 @@ def remove_dns_redirect():
 def main():
     print(f"Starting VPN-AP Captive Portal on port {PORT}...")
 
-    # Set up DNS redirect for captive portal detection
-    setup_dns_redirect()
+    # Check if VPN is already connected
+    vpn_out, _ = run_cmd("nordvpn status 2>/dev/null")
+    if 'Connected' in vpn_out:
+        print("VPN already connected - setting up VPN kill switch mode")
+        remove_dns_redirect()
+        setup_vpn_mode_firewall()
+    else:
+        print("VPN not connected - enabling captive portal mode")
+        setup_dns_redirect()
+        setup_captive_mode_firewall()
 
     try:
         with socketserver.TCPServer(("", PORT), CaptivePortalHandler) as httpd:

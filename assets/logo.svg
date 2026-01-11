@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4ecca3;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2d9c6f;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#16213e;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="95" fill="url(#bgGrad)" stroke="#4ecca3" stroke-width="2"/>
+
+  <!-- Shield shape -->
+  <path d="M100 25 L155 50 L155 100 C155 140 130 165 100 180 C70 165 45 140 45 100 L45 50 Z"
+        fill="url(#shieldGrad)" opacity="0.9"/>
+
+  <!-- Inner shield highlight -->
+  <path d="M100 35 L145 55 L145 98 C145 130 125 152 100 165 C75 152 55 130 55 98 L55 55 Z"
+        fill="none" stroke="#fff" stroke-width="2" opacity="0.3"/>
+
+  <!-- WiFi waves -->
+  <g fill="none" stroke="#1a1a2e" stroke-width="4" stroke-linecap="round">
+    <!-- Outer wave -->
+    <path d="M70 95 Q100 65 130 95" opacity="0.6"/>
+    <!-- Middle wave -->
+    <path d="M80 105 Q100 80 120 105" opacity="0.8"/>
+    <!-- Inner wave -->
+    <path d="M90 115 Q100 100 110 115"/>
+  </g>
+
+  <!-- Center dot -->
+  <circle cx="100" cy="125" r="6" fill="#1a1a2e"/>
+
+  <!-- Lock icon at bottom of shield -->
+  <g transform="translate(85, 138)">
+    <rect x="3" y="8" width="24" height="18" rx="3" fill="#1a1a2e" opacity="0.7"/>
+    <path d="M8 8 L8 4 C8 -2 22 -2 22 4 L22 8" fill="none" stroke="#1a1a2e" stroke-width="3" opacity="0.7"/>
+    <circle cx="15" cy="17" r="3" fill="#4ecca3"/>
+  </g>
+</svg>
