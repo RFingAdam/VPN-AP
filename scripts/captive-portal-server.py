@@ -170,6 +170,11 @@ def connect_wifi(ssid, password):
         time.sleep(2)
         remove_dns_redirect()
         setup_internet_mode_firewall()
+    else:
+        # Connection failed - restore captive portal mode
+        print(f"WiFi connection failed, restoring captive portal mode")
+        setup_dns_redirect()
+        setup_captive_mode_firewall()
 
     return code == 0, output
 
@@ -338,7 +343,7 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
                 let html = '<form method="POST" action="/connect">';
                 html += '<ul class="network-list">';
                 networks.forEach(n => {
-                    const ssidEsc = n.ssid.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+                    const ssidEsc = n.ssid.replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
                     html += '<li class="network-item" onclick="selectNetwork(this, \\'' + ssidEsc + '\\')">';
                     html += n.ssid + ' <span class="signal">' + n.signal + '% ' + (n.security ? '🔒' : '') + '</span>';
                     html += '</li>';
