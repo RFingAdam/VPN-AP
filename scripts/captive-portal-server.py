@@ -240,6 +240,61 @@ def get_status():
     return status
 
 
+def run_cmd_safe(args, timeout=30):
+    """Run a command with argument list (no shell injection risk)"""
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return result.stdout.strip(), result.returncode, result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        log(f"Command timed out: {args[0]}")
+        return "Command timed out", 1, ""
+    except Exception as e:
+        log(f"Command failed: {e}")
+        return str(e), 1, ""
+
+
+def delete_wifi_connection(ssid):
+    """Delete existing NetworkManager connection profile for SSID"""
+    # List all connections and find ones matching this SSID
+    output, code = run_cmd("nmcli -t -f NAME,TYPE connection show")
+    if code == 0:
+        for line in output.split('\n'):
+            if ':802-11-wireless' in line or ':wifi' in line:
+                conn_name = line.split(':')[0]
+                # Check if this connection is for our SSID
+                check_out, check_code = run_cmd(f"nmcli -t -f 802-11-wireless.ssid connection show '{conn_name}' 2>/dev/null")
+                if check_code == 0 and ssid in check_out:
+                    log(f"Deleting old connection profile: {conn_name}")
+                    run_cmd(f"nmcli connection delete '{conn_name}' 2>/dev/null")
+
+    # Also try deleting by exact SSID name (common naming convention)
+    run_cmd(f"nmcli connection delete id '{ssid}' 2>/dev/null")
+
+
+def connect_wifi_nmcli(ssid, password):
+    """Connect to WiFi using nmcli with proper argument handling"""
+    # Build the command as a list to avoid shell escaping issues
+    if password:
+        args = [
+            'nmcli', 'dev', 'wifi', 'connect', ssid,
+            'password', password,
+            'ifname', 'wlan0'
+        ]
+    else:
+        args = [
+            'nmcli', 'dev', 'wifi', 'connect', ssid,
+            'ifname', 'wlan0'
+        ]
+
+    stdout, code, stderr = run_cmd_safe(args, timeout=45)
+
+    if code == 0:
+        return True, stdout
+    else:
+        error_msg = stderr if stderr else stdout
+        return False, error_msg
+
+
 def connect_wifi_with_retry(ssid, password, max_retries=WIFI_MAX_RETRIES):
     """Connect to WiFi with multiple retry strategies"""
     log(f"Attempting to connect to WiFi: {ssid}")
@@ -250,46 +305,44 @@ def connect_wifi_with_retry(ssid, password, max_retries=WIFI_MAX_RETRIES):
     for attempt in range(max_retries):
         log(f"WiFi connection attempt {attempt + 1}/{max_retries}")
 
-        # Disconnect first
+        # Disconnect current connection first
         run_cmd("nmcli dev disconnect wlan0 2>/dev/null")
         time.sleep(1)
 
-        # Different strategies per attempt
+        # On first attempt or after failures, clean up old connection profiles
         if attempt == 0:
-            # Normal connection attempt
-            if password:
-                cmd = f'nmcli dev wifi connect "{ssid}" password "{password}" ifname wlan0'
-            else:
-                cmd = f'nmcli dev wifi connect "{ssid}" ifname wlan0'
-        elif attempt == 1:
-            # Try with rescan
+            # Delete any existing connection profiles for this SSID to start fresh
+            delete_wifi_connection(ssid)
+            time.sleep(1)
+
+        # Different strategies per attempt
+        if attempt == 1:
+            # Second attempt: Force rescan
+            log("Forcing network rescan...")
             run_cmd("nmcli dev wifi rescan 2>/dev/null")
             time.sleep(3)
-            if password:
-                cmd = f'nmcli dev wifi connect "{ssid}" password "{password}" ifname wlan0'
-            else:
-                cmd = f'nmcli dev wifi connect "{ssid}" ifname wlan0'
-        else:
-            # Try bringing interface down and up
-            run_cmd("ip link set wlan0 down && sleep 2 && ip link set wlan0 up")
+        elif attempt >= 2:
+            # Third attempt: Reset interface completely
+            log("Resetting WiFi interface...")
+            run_cmd("nmcli radio wifi off")
+            time.sleep(2)
+            run_cmd("nmcli radio wifi on")
             time.sleep(3)
             run_cmd("nmcli dev wifi rescan 2>/dev/null")
             time.sleep(2)
-            if password:
-                cmd = f'nmcli dev wifi connect "{ssid}" password "{password}" ifname wlan0'
-            else:
-                cmd = f'nmcli dev wifi connect "{ssid}" ifname wlan0'
 
-        output, code = run_cmd(cmd, timeout=45)
+        # Connect using safe argument passing (no shell escaping issues)
+        success, output = connect_wifi_nmcli(ssid, password)
 
-        if code == 0:
-            log(f"WiFi connected successfully to {ssid}")
-            # Wait for IP
-            time.sleep(2)
+        if success:
+            log(f"WiFi connection command successful for {ssid}")
+            # Wait for IP assignment
+            time.sleep(3)
 
             # Verify we got an IP
             ip_out, _ = run_cmd("ip addr show wlan0 | grep 'inet '")
             if ip_out:
+                log(f"WiFi connected successfully to {ssid} with IP")
                 # Save successful connection info
                 save_state({'last_wifi_ssid': ssid, 'last_wifi_password': password})
 
