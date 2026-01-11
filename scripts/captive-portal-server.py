@@ -28,6 +28,11 @@ PORT = 80
 AP_IP = "192.168.4.1"
 STATE_FILE = "/var/lib/vpn-ap/portal-state.json"
 STATE_DIR = "/var/lib/vpn-ap"
+LOG_FILE = "/var/log/vpn-ap-portal.log"
+
+# Interface configuration
+UPSTREAM_IF = os.environ.get('UPSTREAM_IF', 'wlan0')  # WiFi client interface (connects to hotel/home WiFi)
+AP_IF = os.environ.get('AP_IF', 'wlan1')              # AP interface (your devices connect here)
 
 # Retry configuration
 WIFI_MAX_RETRIES = 3
@@ -104,9 +109,16 @@ HTML_FOOTER = """
 """
 
 
-def log(msg):
-    """Log with timestamp"""
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+def log(msg, level="INFO"):
+    """Log with timestamp to both console and file for later debugging"""
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    log_line = f"[{timestamp}] [{level}] {msg}"
+    print(log_line)
+    try:
+        with open(LOG_FILE, 'a') as f:
+            f.write(log_line + '\n')
+    except Exception as e:
+        print(f"[{timestamp}] [ERROR] Failed to write log: {e}")
 
 
 def run_cmd(cmd, timeout=30):
@@ -196,18 +208,20 @@ def get_status():
         'vpn_ip': '',
         'vpn_server': '',
         'internet': False,
-        'mode': 'unknown'
+        'mode': 'unknown',
+        'upstream_if': UPSTREAM_IF,
+        'ap_if': AP_IF
     }
 
-    # Check WiFi connection on wlan0 (upstream)
-    output, code = run_cmd("nmcli -t -f GENERAL.STATE,GENERAL.CONNECTION dev show wlan0 2>/dev/null")
+    # Check WiFi connection on upstream interface (wlan0)
+    output, code = run_cmd(f"nmcli -t -f GENERAL.STATE,GENERAL.CONNECTION dev show {UPSTREAM_IF} 2>/dev/null")
     if 'connected' in output.lower():
         status['wifi_connected'] = True
         # Get SSID
-        ssid_out, _ = run_cmd("iwconfig wlan0 2>/dev/null | grep ESSID | sed 's/.*ESSID:\"\\([^\"]*\\)\".*/\\1/'")
+        ssid_out, _ = run_cmd(f"iwconfig {UPSTREAM_IF} 2>/dev/null | grep ESSID | sed 's/.*ESSID:\"\\([^\"]*\\)\".*/\\1/'")
         status['wifi_ssid'] = ssid_out
         # Get IP
-        ip_out, _ = run_cmd("ip addr show wlan0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1")
+        ip_out, _ = run_cmd(f"ip addr show {UPSTREAM_IF} | grep 'inet ' | awk '{{print $2}}' | cut -d/ -f1")
         status['wifi_ip'] = ip_out
 
     # Check VPN
@@ -273,20 +287,22 @@ def delete_wifi_connection(ssid):
 
 def connect_wifi_nmcli(ssid, password):
     """Connect to WiFi using nmcli with proper argument handling"""
+    log(f"Connecting to '{ssid}' on interface {UPSTREAM_IF}")
     # Build the command as a list to avoid shell escaping issues
     if password:
         args = [
             'nmcli', 'dev', 'wifi', 'connect', ssid,
             'password', password,
-            'ifname', 'wlan0'
+            'ifname', UPSTREAM_IF
         ]
     else:
         args = [
             'nmcli', 'dev', 'wifi', 'connect', ssid,
-            'ifname', 'wlan0'
+            'ifname', UPSTREAM_IF
         ]
 
     stdout, code, stderr = run_cmd_safe(args, timeout=45)
+    log(f"nmcli connect result: code={code}, stdout={stdout[:100] if stdout else ''}, stderr={stderr[:100] if stderr else ''}")
 
     if code == 0:
         return True, stdout
@@ -297,16 +313,18 @@ def connect_wifi_nmcli(ssid, password):
 
 def connect_wifi_with_retry(ssid, password, max_retries=WIFI_MAX_RETRIES):
     """Connect to WiFi with multiple retry strategies"""
-    log(f"Attempting to connect to WiFi: {ssid}")
+    log(f"Attempting to connect to WiFi: {ssid} via interface {UPSTREAM_IF}")
 
     # Save current connection info in case we need to restore
-    current_ssid, _ = run_cmd("iwconfig wlan0 2>/dev/null | grep ESSID | sed 's/.*ESSID:\"\\([^\"]*\\)\".*/\\1/'")
+    current_ssid, _ = run_cmd(f"iwconfig {UPSTREAM_IF} 2>/dev/null | grep ESSID | sed 's/.*ESSID:\"\\([^\"]*\\)\".*/\\1/'")
+    log(f"Current SSID before switch: '{current_ssid}'")
 
     for attempt in range(max_retries):
         log(f"WiFi connection attempt {attempt + 1}/{max_retries}")
 
-        # Disconnect current connection first
-        run_cmd("nmcli dev disconnect wlan0 2>/dev/null")
+        # Disconnect current connection first (only upstream, NOT the AP!)
+        log(f"Disconnecting {UPSTREAM_IF}...")
+        run_cmd(f"nmcli dev disconnect {UPSTREAM_IF} 2>/dev/null")
         time.sleep(1)
 
         # On first attempt or after failures, clean up old connection profiles
@@ -322,11 +340,13 @@ def connect_wifi_with_retry(ssid, password, max_retries=WIFI_MAX_RETRIES):
             run_cmd("nmcli dev wifi rescan 2>/dev/null")
             time.sleep(3)
         elif attempt >= 2:
-            # Third attempt: Reset interface completely
-            log("Resetting WiFi interface...")
-            run_cmd("nmcli radio wifi off")
+            # Third attempt: Reset ONLY the upstream interface (wlan0), NOT the AP (wlan1)
+            # CRITICAL: Using 'nmcli radio wifi off' would kill ALL WiFi including our AP!
+            log(f"Resetting upstream interface {UPSTREAM_IF} only (preserving AP on {AP_IF})...", "WARN")
+            # Use device-specific reset instead of radio off/on
+            run_cmd(f"ip link set {UPSTREAM_IF} down")
             time.sleep(2)
-            run_cmd("nmcli radio wifi on")
+            run_cmd(f"ip link set {UPSTREAM_IF} up")
             time.sleep(3)
             run_cmd("nmcli dev wifi rescan 2>/dev/null")
             time.sleep(2)
@@ -340,19 +360,22 @@ def connect_wifi_with_retry(ssid, password, max_retries=WIFI_MAX_RETRIES):
             time.sleep(3)
 
             # Verify we got an IP
-            ip_out, _ = run_cmd("ip addr show wlan0 | grep 'inet '")
+            ip_out, _ = run_cmd(f"ip addr show {UPSTREAM_IF} | grep 'inet '")
+            log(f"IP check on {UPSTREAM_IF}: {ip_out}")
             if ip_out:
-                log(f"WiFi connected successfully to {ssid} with IP")
+                log(f"WiFi connected successfully to {ssid} with IP on {UPSTREAM_IF}")
                 # Save successful connection info
                 save_state({'last_wifi_ssid': ssid, 'last_wifi_password': password})
 
                 # Enable internet mode
+                log("Enabling internet mode firewall...")
                 remove_dns_redirect()
                 setup_internet_mode_firewall()
                 ensure_management_access()
+                log("WiFi switch complete - internet mode active")
                 return True, "Connected successfully"
             else:
-                log("Connected but no IP received, retrying...")
+                log("Connected but no IP received, retrying...", "WARN")
         else:
             log(f"Connection attempt failed: {output}")
 
@@ -360,10 +383,12 @@ def connect_wifi_with_retry(ssid, password, max_retries=WIFI_MAX_RETRIES):
             time.sleep(WIFI_RETRY_DELAY)
 
     # All attempts failed - restore captive portal mode
-    log(f"All WiFi connection attempts failed for {ssid}")
+    log(f"All WiFi connection attempts failed for {ssid}", "ERROR")
+    log(f"Restoring captive portal mode after failed WiFi switch", "WARN")
     setup_dns_redirect()
     setup_captive_mode_firewall()
     ensure_management_access()
+    log("Captive portal mode restored - user can retry from web interface")
 
     return False, "Connection failed after multiple attempts"
 
@@ -465,48 +490,57 @@ def find_script(name):
 
 def setup_captive_mode_firewall():
     """Set up restrictive firewall for captive portal mode"""
+    log("Setting up captive portal mode firewall...")
     script = find_script("iptables-captive-mode.sh")
     if script:
+        log(f"Running firewall script: {script}")
         result = subprocess.run(["bash", script], capture_output=True, text=True)
         ensure_management_access()  # Always ensure access after firewall change
-        log("Captive mode firewall activated")
+        if result.returncode == 0:
+            log("Captive mode firewall activated successfully")
+        else:
+            log(f"Captive mode firewall script returned error: {result.stderr}", "ERROR")
         return result.returncode == 0
     else:
-        log("Warning: iptables-captive-mode.sh not found")
+        log("Warning: iptables-captive-mode.sh not found", "WARN")
         return False
 
 
 def setup_internet_mode_firewall():
     """Set up firewall that allows internet without VPN"""
+    log("Setting up internet mode firewall...")
     script = find_script("iptables-internet-mode.sh")
     if script:
+        log(f"Running firewall script: {script}")
         result = subprocess.run(["bash", script], capture_output=True, text=True)
         ensure_management_access()  # Always ensure access after firewall change
         if result.returncode == 0:
-            log("Internet mode firewall activated")
+            log("Internet mode firewall activated successfully")
             return True
         else:
-            log(f"Failed to set up internet firewall: {result.stderr}")
+            log(f"Failed to set up internet firewall: {result.stderr}", "ERROR")
             return False
     else:
-        log("Warning: iptables-internet-mode.sh not found")
+        log("Warning: iptables-internet-mode.sh not found", "WARN")
         return False
 
 
 def setup_vpn_mode_firewall():
     """Set up VPN kill switch firewall"""
+    log("Setting up VPN kill switch firewall...")
     script = find_script("iptables-vpn-mode.sh")
     if script:
+        log(f"Running firewall script: {script}")
         result = subprocess.run(["bash", script], capture_output=True, text=True)
         ensure_management_access()  # Always ensure access after firewall change
         if result.returncode == 0:
-            log("VPN kill switch firewall activated")
+            log("VPN kill switch firewall activated successfully")
             return True
         else:
-            log(f"Failed to set up VPN firewall: {result.stderr}")
+            log(f"Failed to set up VPN firewall: {result.stderr}", "ERROR")
             return False
     else:
-        log("Warning: iptables-vpn-mode.sh not found")
+        log("Warning: iptables-vpn-mode.sh not found", "WARN")
         return False
 
 
@@ -521,6 +555,51 @@ def reconnect_last_wifi():
         success, _ = connect_wifi_with_retry(ssid, password, max_retries=2)
         return success
     return False
+
+
+def get_debug_info():
+    """Collect comprehensive debug information"""
+    debug = {
+        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'interfaces': {},
+        'connections': '',
+        'routes': '',
+        'iptables_filter': '',
+        'iptables_nat': '',
+        'processes': ''
+    }
+
+    # Get interface info
+    for iface in [UPSTREAM_IF, AP_IF, 'nordlynx']:
+        output, _ = run_cmd(f"ip addr show {iface} 2>/dev/null")
+        debug['interfaces'][iface] = output if output else 'not found'
+
+    # Get nmcli connections
+    debug['connections'], _ = run_cmd("nmcli -t connection show --active 2>/dev/null")
+
+    # Get routing table
+    debug['routes'], _ = run_cmd("ip route show 2>/dev/null")
+
+    # Get iptables rules (summary)
+    debug['iptables_filter'], _ = run_cmd("iptables -L -n --line-numbers 2>/dev/null")
+    debug['iptables_nat'], _ = run_cmd("iptables -t nat -L -n --line-numbers 2>/dev/null")
+
+    # Get relevant processes
+    debug['processes'], _ = run_cmd("ps aux | grep -E '(hostapd|dnsmasq|nordvpn|wpa_supplicant)' | grep -v grep")
+
+    return debug
+
+
+def get_recent_logs(lines=50):
+    """Get recent log entries"""
+    try:
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'r') as f:
+                all_lines = f.readlines()
+                return ''.join(all_lines[-lines:])
+        return "No log file found"
+    except Exception as e:
+        return f"Error reading log: {e}"
 
 
 def reconnect_last_vpn():
@@ -604,6 +683,14 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
                 self.emergency_reset_firewall()
             elif path == '/emergency/restart-services':
                 self.emergency_restart_services()
+            elif path == '/debug':
+                self.show_debug()
+            elif path == '/debug/logs':
+                self.show_logs()
+            elif path == '/api/debug':
+                self.send_json(get_debug_info())
+            elif path == '/api/logs':
+                self.send_json({'logs': get_recent_logs(100)})
             else:
                 # Unknown path - redirect to home (captive portal behavior)
                 self.redirect(f'http://{AP_IP}/')
@@ -835,6 +922,7 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
             <p><strong>Direct Portal:</strong> http://192.168.4.1/</p>
         </div>'''
 
+        content += '<a href="/debug"><button class="secondary">View Debug Info & Logs</button></a>'
         content += '<a href="/"><button class="secondary">Back to Home</button></a>'
         content += '</div>'
         self.send_html(content)
@@ -888,6 +976,48 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
         content += '<a href="/"><button>Back</button></a>'
         self.send_html(content)
 
+    def show_debug(self):
+        """Show comprehensive debug information"""
+        debug = get_debug_info()
+        content = '<h1>Debug Information</h1>'
+
+        content += '<div class="card"><h2>Interfaces</h2><pre style="white-space: pre-wrap; font-size: 11px;">'
+        for iface, info in debug['interfaces'].items():
+            content += f"=== {iface} ===\n{html.escape(info)}\n\n"
+        content += '</pre></div>'
+
+        content += '<div class="card"><h2>Active Connections</h2><pre style="white-space: pre-wrap; font-size: 11px;">'
+        content += html.escape(debug['connections'] or 'None')
+        content += '</pre></div>'
+
+        content += '<div class="card"><h2>Routes</h2><pre style="white-space: pre-wrap; font-size: 11px;">'
+        content += html.escape(debug['routes'])
+        content += '</pre></div>'
+
+        content += '<div class="card"><h2>IPTables (Filter)</h2><pre style="white-space: pre-wrap; font-size: 10px;">'
+        content += html.escape(debug['iptables_filter'][:2000])  # Truncate if too long
+        content += '</pre></div>'
+
+        content += '<div class="card"><h2>Relevant Processes</h2><pre style="white-space: pre-wrap; font-size: 11px;">'
+        content += html.escape(debug['processes'] or 'None running')
+        content += '</pre></div>'
+
+        content += '<a href="/debug/logs"><button class="secondary">View Logs</button></a>'
+        content += '<a href="/"><button class="secondary">Back</button></a>'
+        self.send_html(content)
+
+    def show_logs(self):
+        """Show recent log entries"""
+        logs = get_recent_logs(100)
+        content = '<h1>Recent Logs</h1>'
+        content += '<div class="card"><pre style="white-space: pre-wrap; font-size: 10px; max-height: 500px; overflow-y: auto;">'
+        content += html.escape(logs)
+        content += '</pre></div>'
+        content += '<div class="message info">Log file: ' + LOG_FILE + '</div>'
+        content += '<a href="/debug"><button class="secondary">Debug Info</button></a>'
+        content += '<a href="/"><button class="secondary">Back</button></a>'
+        self.send_html(content)
+
 
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
@@ -929,7 +1059,9 @@ def health_check_thread():
 
 
 def main():
+    log(f"========================================")
     log(f"Starting VPN-AP Captive Portal (Robust) on port {PORT}...")
+    log(f"Log file: {LOG_FILE}")
 
     # Set up signal handlers
     signal.signal(signal.SIGTERM, signal_handler)
@@ -938,9 +1070,18 @@ def main():
     # Ensure management access is available before anything else
     ensure_management_access()
 
+    log(f"Interface config: upstream={UPSTREAM_IF}, ap={AP_IF}")
+
+    # Log initial system state for debugging
+    log("Capturing initial system state...")
+    iface_out, _ = run_cmd(f"ip link show {UPSTREAM_IF} 2>/dev/null | head -1")
+    log(f"Upstream interface ({UPSTREAM_IF}): {iface_out}")
+    ap_out, _ = run_cmd(f"ip link show {AP_IF} 2>/dev/null | head -1")
+    log(f"AP interface ({AP_IF}): {ap_out}")
+
     # Check current state and set appropriate mode
     vpn_out, _ = run_cmd("nordvpn status 2>/dev/null")
-    wifi_out, _ = run_cmd("nmcli -t -f GENERAL.STATE dev show wlan0 2>/dev/null")
+    wifi_out, _ = run_cmd(f"nmcli -t -f GENERAL.STATE dev show {UPSTREAM_IF} 2>/dev/null")
 
     if 'Connected' in vpn_out:
         log("VPN connected - enabling kill switch mode")
