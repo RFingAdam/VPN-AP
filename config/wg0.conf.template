@@ -1,0 +1,55 @@
+# WireGuard configuration template for NordVPN (NordLynx)
+#
+# To get your NordVPN WireGuard credentials:
+# 1. Log into https://my.nordaccount.com/
+# 2. Go to "Services" → "NordVPN"
+# 3. Click "Set up NordVPN manually"
+# 4. Select "WireGuard" tab
+# 5. Generate or copy your private key
+# 6. Choose a server and copy its public key and endpoint
+#
+# Copy this file to wg0.conf and fill in the values below
+
+[Interface]
+# Your NordVPN private key (from the dashboard)
+PrivateKey = YOUR_NORDVPN_PRIVATE_KEY_HERE
+
+# Local IP address assigned by NordVPN (typically 10.5.0.2/16)
+Address = 10.5.0.2/16
+
+# Use NordVPN's DNS to prevent leaks
+DNS = 103.86.96.100, 103.86.99.100
+
+# Optional: Set MTU for better performance
+MTU = 1420
+
+[Peer]
+# NordVPN server's public key (from the dashboard)
+PublicKey = SERVER_PUBLIC_KEY_HERE
+
+# Allow all traffic through the tunnel
+AllowedIPs = 0.0.0.0/0
+
+# NordVPN server endpoint (hostname:port)
+# Example: us1234.nordvpn.com:51820
+Endpoint = SERVER_HOSTNAME:51820
+
+# Keep connection alive (important for NAT traversal)
+PersistentKeepalive = 25
+
+
+# ============================================
+# Example completed configuration:
+# ============================================
+# [Interface]
+# PrivateKey = aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890abcdefg=
+# Address = 10.5.0.2/16
+# DNS = 103.86.96.100, 103.86.99.100
+# MTU = 1420
+#
+# [Peer]
+# PublicKey = XyZ0987654321AbCdEfGhIjKlMnOpQrStUvWxYz1234=
+# AllowedIPs = 0.0.0.0/0
+# Endpoint = us5432.nordvpn.com:51820
+# PersistentKeepalive = 25
+# ============================================

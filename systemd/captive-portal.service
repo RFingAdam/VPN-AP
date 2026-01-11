@@ -1,0 +1,17 @@
+[Unit]
+Description=VPN-AP Captive Portal Web Interface
+After=network.target hostapd.service dnsmasq.service
+Wants=hostapd.service dnsmasq.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/pi/VPN-AP/scripts/captive-portal-server.py
+Restart=on-failure
+RestartSec=5
+User=root
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

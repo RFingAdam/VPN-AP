@@ -1,0 +1,23 @@
+# Secrets and credentials
+*.pem
+*.key
+*.crt
+wg0.conf
+*.env
+.env*
+secrets/
+credentials/
+
+# System files
+*.log
+*.pid
+__pycache__/
+*.pyc
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Editor files
+.vscode/
+.idea/
