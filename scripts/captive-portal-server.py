@@ -269,6 +269,11 @@ def run_cmd_safe(args, timeout=30):
 
 def delete_wifi_connection(ssid):
     """Delete existing NetworkManager connection profile for SSID"""
+    # Delete our standard vpn-ap connection name first
+    vpn_ap_conn = f"vpn-ap-{ssid}"
+    log(f"Cleaning up connection profiles for SSID: {ssid}")
+    run_cmd_safe(['nmcli', 'connection', 'delete', vpn_ap_conn], timeout=10)
+
     # List all connections and find ones matching this SSID
     output, code = run_cmd("nmcli -t -f NAME,TYPE connection show")
     if code == 0:
@@ -279,36 +284,73 @@ def delete_wifi_connection(ssid):
                 check_out, check_code = run_cmd(f"nmcli -t -f 802-11-wireless.ssid connection show '{conn_name}' 2>/dev/null")
                 if check_code == 0 and ssid in check_out:
                     log(f"Deleting old connection profile: {conn_name}")
-                    run_cmd(f"nmcli connection delete '{conn_name}' 2>/dev/null")
+                    run_cmd_safe(['nmcli', 'connection', 'delete', conn_name], timeout=10)
 
     # Also try deleting by exact SSID name (common naming convention)
-    run_cmd(f"nmcli connection delete id '{ssid}' 2>/dev/null")
+    run_cmd_safe(['nmcli', 'connection', 'delete', ssid], timeout=10)
 
 
 def connect_wifi_nmcli(ssid, password):
     """Connect to WiFi using nmcli with proper argument handling"""
     log(f"Connecting to '{ssid}' on interface {UPSTREAM_IF}")
-    # Build the command as a list to avoid shell escaping issues
+
     if password:
-        args = [
-            'nmcli', 'dev', 'wifi', 'connect', ssid,
-            'password', password,
-            'ifname', UPSTREAM_IF
+        # For secured networks, we need to create a connection profile with proper security settings
+        # Using 'nmcli connection add' then 'nmcli connection up' is more reliable than 'nmcli dev wifi connect'
+        # because it properly sets the security type
+
+        # First, create a unique connection name
+        conn_name = f"vpn-ap-{ssid}"
+
+        # Delete any existing connection with this name
+        run_cmd_safe(['nmcli', 'connection', 'delete', conn_name], timeout=10)
+        time.sleep(0.5)
+
+        # Create the connection profile with WPA-PSK security
+        # This properly sets 802-11-wireless-security.key-mgmt
+        add_args = [
+            'nmcli', 'connection', 'add',
+            'type', 'wifi',
+            'con-name', conn_name,
+            'ifname', UPSTREAM_IF,
+            'ssid', ssid,
+            'wifi-sec.key-mgmt', 'wpa-psk',
+            'wifi-sec.psk', password
         ]
+
+        stdout, code, stderr = run_cmd_safe(add_args, timeout=15)
+        log(f"nmcli connection add result: code={code}, stdout={stdout[:100] if stdout else ''}, stderr={stderr[:100] if stderr else ''}")
+
+        if code != 0:
+            error_msg = stderr if stderr else stdout
+            return False, f"Failed to create connection profile: {error_msg}"
+
+        # Now activate the connection
+        time.sleep(0.5)
+        up_args = ['nmcli', 'connection', 'up', conn_name]
+        stdout, code, stderr = run_cmd_safe(up_args, timeout=45)
+        log(f"nmcli connection up result: code={code}, stdout={stdout[:100] if stdout else ''}, stderr={stderr[:100] if stderr else ''}")
+
+        if code == 0:
+            return True, stdout
+        else:
+            error_msg = stderr if stderr else stdout
+            return False, error_msg
     else:
+        # For open networks, the simple connect should work
         args = [
             'nmcli', 'dev', 'wifi', 'connect', ssid,
             'ifname', UPSTREAM_IF
         ]
 
-    stdout, code, stderr = run_cmd_safe(args, timeout=45)
-    log(f"nmcli connect result: code={code}, stdout={stdout[:100] if stdout else ''}, stderr={stderr[:100] if stderr else ''}")
+        stdout, code, stderr = run_cmd_safe(args, timeout=45)
+        log(f"nmcli connect result: code={code}, stdout={stdout[:100] if stdout else ''}, stderr={stderr[:100] if stderr else ''}")
 
-    if code == 0:
-        return True, stdout
-    else:
-        error_msg = stderr if stderr else stdout
-        return False, error_msg
+        if code == 0:
+            return True, stdout
+        else:
+            error_msg = stderr if stderr else stdout
+            return False, error_msg
 
 
 def connect_wifi_with_retry(ssid, password, max_retries=WIFI_MAX_RETRIES):
