@@ -2,6 +2,7 @@
 # Internet Mode - Allow forwarding through upstream WITHOUT VPN
 # Used after WiFi connects but before VPN is enabled
 # WARNING: Traffic is NOT encrypted in this mode!
+# SAFETY: SSH is always allowed on ALL interfaces to prevent lockout
 
 AP_IF="${AP_IF:-wlan1}"
 UPSTREAM_IF="${UPSTREAM_IF:-wlan0}"
@@ -36,6 +37,9 @@ iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
+# === CRITICAL: SSH on ALL interfaces (prevent lockout) ===
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+
 # === AP Interface - Allow portal services ===
 
 # DHCP server
@@ -48,16 +52,8 @@ iptables -A INPUT -i $AP_IF -p tcp --dport 53 -j ACCEPT
 # HTTP (captive portal web interface)
 iptables -A INPUT -i $AP_IF -p tcp --dport 80 -j ACCEPT
 
-# SSH (for management)
-iptables -A INPUT -i $AP_IF -p tcp --dport 22 -j ACCEPT
-
 # Ping
 iptables -A INPUT -i $AP_IF -p icmp --icmp-type echo-request -j ACCEPT
-
-# === Upstream Interface ===
-
-# SSH on upstream (if needed from local network)
-iptables -A INPUT -i $UPSTREAM_IF -p tcp --dport 22 -j ACCEPT
 
 # DHCP client (to get/maintain IP from hotel)
 iptables -A INPUT -i $UPSTREAM_IF -p udp --sport 67:68 --dport 67:68 -j ACCEPT

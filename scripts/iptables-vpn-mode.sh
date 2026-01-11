@@ -1,6 +1,7 @@
 #!/bin/bash
 # VPN Mode - Kill switch that only allows traffic through VPN
 # Called after VPN connects successfully
+# SAFETY: SSH is always allowed on ALL interfaces to prevent lockout
 
 VPN_IF="${VPN_IF:-nordlynx}"
 AP_IF="${AP_IF:-wlan1}"
@@ -47,13 +48,9 @@ iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# === LOCAL PI RULES ===
-
-# SSH on AP interface (for management from connected devices)
-iptables -A INPUT -i $AP_IF -p tcp --dport 22 -j ACCEPT
-
-# SSH on upstream (in case needed from local network)
-iptables -A INPUT -i $UPSTREAM_IF -p tcp --dport 22 -j ACCEPT
+# === CRITICAL: SSH on ALL interfaces (prevent lockout) ===
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+iptables -A OUTPUT -p tcp --sport 22 -j ACCEPT
 
 # DHCP server on AP interface
 iptables -A INPUT -i $AP_IF -p udp --dport 67 -j ACCEPT
