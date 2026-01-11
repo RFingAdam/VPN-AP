@@ -5,8 +5,12 @@
 <h1 align="center">VPN-AP: Travel VPN Router</h1>
 
 <p align="center">
-  Turn your Raspberry Pi into a portable VPN router.<br>
+  Turn your Raspberry Pi into a portable, bulletproof VPN router.<br>
   Connect your devices to a secure WiFi access point that routes all traffic through NordVPN with a built-in kill switch.
+</p>
+
+<p align="center">
+  <strong>Plug and play. Auto-recovery. Never get locked out.</strong>
 </p>
 
 ---
@@ -20,24 +24,32 @@
 - **Protects all your devices** - Phones, laptops, tablets, even devices that can't run VPN apps (smart TVs, game consoles)
 - **Handles captive portals gracefully** - Web interface to configure hotel WiFi and complete their login, then enable VPN
 - **Guarantees protection with kill switch** - If VPN drops, traffic stops. No accidental exposure
-- **Works everywhere** - Looks like a normal WiFi connection to your devices; no per-device VPN setup needed
+- **Auto-recovers from failures** - Watchdog monitors services and reconnects automatically
+- **Never locks you out** - SSH always accessible, emergency recovery built-in
+- **Works everywhere** - Looks like a normal WiFi connection to your devices
 - **Portable** - Raspberry Pi + USB WiFi adapter fits in your bag
-
-**Use Cases**:
-- Business travelers protecting sensitive work on hotel WiFi
-- Privacy-conscious users who want all devices protected
-- Families who want one VPN subscription to cover all devices
-- Accessing geo-restricted content on devices that don't support VPN apps
-- Security researchers who need a controlled network environment
 
 ## Features
 
-- **Web-based Captive Portal**: Connect to the AP and configure WiFi through an intuitive web interface
-- **NordVPN Integration**: Uses NordVPN CLI with NordLynx (WireGuard) protocol
-- **Kill Switch**: If VPN disconnects, all client internet traffic stops (no leaks)
-- **Hotel WiFi Support**: Easy captive portal bypass for hotel/airport networks
-- **Auto-start on Boot**: Powers on in captive portal mode, ready to configure
-- **SSH Access Preserved**: Manage the Pi even when VPN is active
+### Core Features
+- **Web-based Captive Portal** - Configure WiFi through an intuitive interface at `http://192.168.4.1`
+- **NordVPN Integration** - Uses NordVPN CLI with NordLynx (WireGuard) protocol
+- **Kill Switch** - If VPN disconnects, all client internet traffic stops (no leaks)
+- **Hotel WiFi Support** - Easy captive portal bypass for hotel/airport networks
+
+### Reliability Features (v1.2.0+)
+- **Automatic Watchdog** - Monitors services every minute, auto-recovers failures
+- **WiFi Retry Logic** - 3 attempts with different strategies if connection fails
+- **VPN Server Fallbacks** - Tries multiple servers (auto, US, UK, DE, NL, CH) if one fails
+- **State Persistence** - Remembers last WiFi/VPN for auto-reconnect after reboot
+- **Health Monitoring** - Background thread detects and fixes connection drops
+- **Emergency Recovery** - Web-based and CLI recovery options
+
+### Safety Features
+- **SSH Always Accessible** - Port 22 open on ALL interfaces in all firewall modes
+- **Portal Always Available** - Web interface at 192.168.4.1 always reachable
+- **Graceful Degradation** - If VPN fails, internet still works (with warning)
+- **Firewall Failsafes** - Management access rules inserted at top of iptables chains
 
 ## Hardware Requirements
 
@@ -87,6 +99,7 @@ sudo nano /etc/hostapd/hostapd.conf
 sudo systemctl daemon-reload
 sudo systemctl enable vpn-ap
 sudo systemctl enable captive-portal
+sudo systemctl enable vpn-ap-watchdog.timer
 ```
 
 ### 5. Reboot
@@ -104,17 +117,55 @@ sudo reboot
 3. A captive portal will appear (or go to http://192.168.4.1)
 4. Select the hotel WiFi network and enter password
 5. If needed, complete the hotel's captive portal login
-6. Click "Connect VPN"
+6. Click "Enable VPN"
 7. Done! All your traffic is now encrypted with kill switch protection
 
 ### Web Interface
 
 Access the configuration portal at: **http://192.168.4.1**
 
-- View connection status (WiFi, VPN, Internet)
-- Scan and connect to WiFi networks
-- Connect/disconnect VPN
-- Access hotel captive portals
+| Page | Description |
+|------|-------------|
+| `/` | Main dashboard - status and controls |
+| `/scan` | Scan and connect to WiFi networks |
+| `/vpn/connect` | Connect to VPN with retry logic |
+| `/vpn/disconnect` | Disconnect VPN |
+| `/hotel-portal` | Instructions for hotel captive portals |
+| `/emergency` | Emergency recovery options |
+| `/status` | JSON status for debugging |
+
+### Emergency Recovery
+
+If something goes wrong, you have multiple recovery options:
+
+**Web-based** (from any device on TravelRouter WiFi):
+```
+http://192.168.4.1/emergency
+```
+- Reset Firewall (allow all traffic)
+- Restart All Services
+- Reconnect WiFi
+
+**CLI-based** (via SSH):
+```bash
+# Full recovery - disconnect VPN, reset firewall, restart services
+sudo vpn-ap-emergency full
+
+# Just reset firewall to allow all
+sudo vpn-ap-emergency reset
+
+# Check current status
+sudo vpn-ap-emergency status
+
+# Disconnect VPN and reset firewall
+sudo vpn-ap-emergency vpn-off
+```
+
+**SSH Access** - Always available on port 22:
+```bash
+ssh pi@192.168.4.1      # From TravelRouter network
+ssh pi@<upstream-ip>    # From upstream network (hotel WiFi)
+```
 
 ## How It Works
 
@@ -129,32 +180,51 @@ Power On
 │  - DNS redirects all queries to Pi  │
 │  - No internet forwarding           │
 │  - Web portal at 192.168.4.1        │
+│  - Watchdog starts monitoring       │
 └─────────────────────────────────────┘
     │
-    │ User configures WiFi + connects VPN
+    │ User configures WiFi
+    ▼
+┌─────────────────────────────────────┐
+│  INTERNET MODE (No VPN)             │
+│  - Traffic forwarded (unencrypted!) │
+│  - Warning shown in portal          │
+│  - Can complete hotel login         │
+└─────────────────────────────────────┘
+    │
+    │ User enables VPN
     ▼
 ┌─────────────────────────────────────┐
 │  VPN MODE (Kill Switch Active)      │
 │  - Traffic only through VPN tunnel  │
 │  - If VPN drops, internet stops     │
-│  - Real DNS resolution enabled      │
+│  - Auto-reconnect attempts          │
 └─────────────────────────────────────┘
-    │
-    │ Reboot/Power cycle
-    ▼
-    Back to Captive Portal Mode
 ```
 
 ### Network Architecture
 
 ```
 [Your Devices] --> [TravelRouter AP (wlan1)] --> [Pi] --> [NordVPN] --> [Hotel WiFi (wlan0)] --> Internet
-     ^                     ^                       ^
-     |                     |                       |
-   192.168.4.x        192.168.4.1            Kill Switch:
-                                             Traffic ONLY
-                                             through VPN
+     ^                     ^                       ^            ^
+     |                     |                       |            |
+   192.168.4.x        192.168.4.1             Watchdog     Kill Switch:
+                                              monitors     Traffic ONLY
+                                              & recovers   through VPN
 ```
+
+### Automatic Recovery
+
+The system includes multiple layers of automatic recovery:
+
+| Component | Recovery Mechanism |
+|-----------|-------------------|
+| **WiFi Connection** | 3 retry attempts with different strategies (normal → rescan → interface reset) |
+| **VPN Connection** | Tries 6 different servers, 3 attempts each |
+| **Services (hostapd, dnsmasq, portal)** | Watchdog checks every minute, auto-restarts if down |
+| **WiFi Drops** | Health thread detects and reconnects to last known network |
+| **VPN Drops** | Health thread detects and reconnects to last server |
+| **Firewall Rules** | Management access rules re-added after every firewall change |
 
 ### Kill Switch
 
@@ -167,32 +237,71 @@ The kill switch ensures your traffic is always protected:
 
 ## Manual Commands
 
+### Status & Monitoring
+
 ```bash
-# Check status
+# Check all services
+systemctl status vpn-ap captive-portal hostapd dnsmasq
+
+# Check VPN status
 nordvpn status
-systemctl status vpn-ap captive-portal
 
-# Connect/disconnect VPN
-nordvpn connect
-nordvpn disconnect
+# Check watchdog logs
+cat /var/log/vpn-ap-watchdog.log
 
-# Manually apply firewall modes
-sudo /usr/local/bin/iptables-vpn-mode.sh      # Kill switch mode
-sudo /usr/local/bin/iptables-captive-mode.sh  # Captive portal mode
-
-# Restart services
-sudo systemctl restart vpn-ap
-sudo systemctl restart captive-portal
+# Check portal logs
+journalctl -u captive-portal -f
 
 # View connected clients
 arp -a | grep 192.168.4
 
 # Check public IP (should show VPN server IP)
 curl https://api.ipify.org
+```
 
-# Check iptables rules
+### VPN Control
+
+```bash
+# Connect/disconnect VPN
+nordvpn connect
+nordvpn disconnect
+
+# Connect to specific server
+nordvpn connect us
+nordvpn connect uk
+```
+
+### Firewall Modes
+
+```bash
+# Apply VPN kill switch mode
+sudo /usr/local/bin/iptables-vpn-mode.sh
+
+# Apply internet mode (no VPN, forwarding enabled)
+sudo /usr/local/bin/iptables-internet-mode.sh
+
+# Apply captive portal mode (restrictive)
+sudo /usr/local/bin/iptables-captive-mode.sh
+
+# Check current rules
 sudo iptables -L -n -v
 sudo iptables -t nat -L -n -v
+```
+
+### Service Control
+
+```bash
+# Restart services
+sudo systemctl restart vpn-ap
+sudo systemctl restart captive-portal
+sudo systemctl restart hostapd
+sudo systemctl restart dnsmasq
+
+# Run watchdog manually
+sudo /usr/local/bin/vpn-ap-watchdog
+
+# Check watchdog timer
+systemctl list-timers vpn-ap-watchdog.timer
 ```
 
 ## Troubleshooting
@@ -201,6 +310,8 @@ sudo iptables -t nat -L -n -v
 ```bash
 sudo systemctl status hostapd
 sudo systemctl restart vpn-ap
+# Or use emergency recovery:
+sudo vpn-ap-emergency restart
 ```
 
 ### No internet through VPN
@@ -218,26 +329,42 @@ sudo iptables -L FORWARD -n -v
 sudo /usr/local/bin/iptables-vpn-mode.sh
 ```
 
-### Stuck in captive portal mode after VPN connects
+### Stuck in captive portal mode
 ```bash
 # Remove DNS redirect manually
 sudo rm /etc/dnsmasq.d/captive-portal.conf
 sudo systemctl restart dnsmasq
 
-# Apply VPN firewall
-sudo /usr/local/bin/iptables-vpn-mode.sh
+# Apply internet or VPN firewall
+sudo /usr/local/bin/iptables-internet-mode.sh
 ```
 
 ### Lost SSH access
-SSH should work via LAN discovery. If not:
+SSH should always work. If having issues:
 ```bash
 # From a device on the AP network (192.168.4.x)
 ssh pi@192.168.4.1
+
+# Emergency firewall reset (if you have console access)
+sudo vpn-ap-emergency reset
 ```
 
 ### Hotel captive portal not working
-1. Use the web portal's "Open Hotel Portal" button
-2. Or manually: disconnect VPN, open http://neverssl.com, complete login, reconnect VPN
+1. Use the web portal's "Complete Hotel Login" button
+2. Or manually: go to http://neverssl.com from portal, complete login
+
+### Services keep crashing
+```bash
+# Check watchdog logs for recovery attempts
+cat /var/log/vpn-ap-watchdog.log
+
+# Check for errors
+journalctl -u captive-portal -n 50
+journalctl -u hostapd -n 50
+
+# Full system recovery
+sudo vpn-ap-emergency full
+```
 
 ## Files
 
@@ -248,27 +375,57 @@ VPN-AP/
 │   ├── start-ap.sh               # Start access point
 │   ├── start-vpn.sh              # Start VPN with routing
 │   ├── captive-portal.sh         # CLI captive portal bypass
-│   ├── captive-portal-server.py  # Web configuration portal
+│   ├── captive-portal-server.py  # Web configuration portal (robust version)
 │   ├── switch-upstream.sh        # Switch between eth0/wlan0
 │   ├── iptables-captive-mode.sh  # Restrictive firewall for portal mode
-│   └── iptables-vpn-mode.sh      # Kill switch firewall for VPN mode
+│   ├── iptables-internet-mode.sh # Forwarding without VPN
+│   ├── iptables-vpn-mode.sh      # Kill switch firewall for VPN mode
+│   ├── watchdog.sh               # Service monitor and auto-recovery
+│   └── emergency-recovery.sh     # CLI emergency recovery tool
 ├── config/
 │   ├── hostapd.conf              # AP configuration
 │   ├── dnsmasq.conf              # DHCP/DNS configuration
 │   ├── iptables.rules            # Legacy iptables rules
 │   └── wg0.conf.template         # WireGuard template (optional)
 ├── systemd/
-│   └── vpn-ap.service            # Main service
-└── README.md
+│   ├── vpn-ap.service            # Main AP service
+│   ├── captive-portal.service    # Web portal service
+│   ├── vpn-ap-watchdog.service   # Watchdog oneshot service
+│   └── vpn-ap-watchdog.timer     # Watchdog timer (runs every minute)
+├── README.md
+└── CHANGELOG.md
 ```
+
+## State Files
+
+The system maintains state for recovery in `/var/lib/vpn-ap/`:
+
+| File | Purpose |
+|------|---------|
+| `portal-state.json` | Last WiFi SSID/password, last VPN server |
+| `last_watchdog_check` | Timestamp of last successful watchdog run |
+| `*_recovery_count` | Tracks recovery attempts to prevent loops |
+| `last_reset` | Date of last daily counter reset |
 
 ## Security Notes
 
 - **Change the default AP password** in `/etc/hostapd/hostapd.conf`
 - NordVPN credentials are managed by the NordVPN CLI (not stored in config files)
-- SSH access is preserved via LAN discovery and port allowlist
+- SSH access is preserved via global iptables rule (port 22 always open)
 - **Kill switch** ensures no traffic leaks if VPN disconnects
 - Captive portal mode has restricted internet access (Pi only, not forwarded to clients)
+- WiFi passwords are stored in state file for auto-reconnect (secured by file permissions)
+
+## Reliability Guarantees
+
+| Scenario | Behavior |
+|----------|----------|
+| WiFi connection fails | Retries 3x with different strategies, restores portal mode |
+| VPN connection fails | Tries 6 servers, falls back to internet-only mode with warning |
+| Service crashes | Watchdog restarts within 1 minute |
+| Power loss / reboot | State restored, auto-reconnects to last WiFi/VPN |
+| Firewall misconfiguration | Management access rules always re-added |
+| Complete lockout | Emergency recovery via SSH or web portal |
 
 ## License
 
