@@ -58,17 +58,19 @@ HTML_HEADER = """<!DOCTYPE html>
         button:hover { background: #3db892; transform: translateY(-2px); }
         button:disabled { background: #666; cursor: not-allowed; transform: none; }
         button.secondary { background: rgba(255,255,255,0.1); color: #fff; margin-top: 10px; }
+        button.danger { background: #dc3545; color: #fff; margin-top: 10px; }
         .message { padding: 15px; border-radius: 8px; margin-bottom: 15px; }
         .message.success { background: rgba(78, 204, 163, 0.2); border: 1px solid #4ecca3; }
         .message.error { background: rgba(220, 53, 69, 0.2); border: 1px solid #dc3545; }
         .message.info { background: rgba(255, 193, 7, 0.2); border: 1px solid #ffc107; }
+        .message.warning { background: rgba(255, 152, 0, 0.2); border: 1px solid #ff9800; }
         .loading { text-align: center; padding: 20px; }
         .spinner { display: inline-block; width: 30px; height: 30px;
                    border: 3px solid rgba(255,255,255,0.3);
                    border-radius: 50%; border-top-color: #4ecca3;
                    animation: spin 1s ease-in-out infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        a { color: #4ecca3; }
+        a { color: #4ecca3; text-decoration: none; }
     </style>
 </head>
 <body>
@@ -99,9 +101,11 @@ def get_wifi_networks():
     networks = []
     output, code = run_cmd("nmcli -t -f SSID,SIGNAL,SECURITY dev wifi list --rescan yes 2>/dev/null")
     if code == 0 and output:
+        seen = set()
         for line in output.split('\n'):
             parts = line.split(':')
-            if len(parts) >= 2 and parts[0]:
+            if len(parts) >= 2 and parts[0] and parts[0] not in seen:
+                seen.add(parts[0])
                 networks.append({
                     'ssid': parts[0],
                     'signal': parts[1] if len(parts) > 1 else '?',
@@ -121,7 +125,7 @@ def get_status():
         'internet': False
     }
 
-    # Check WiFi connection
+    # Check WiFi connection on wlan0 (upstream)
     output, code = run_cmd("nmcli -t -f GENERAL.STATE,GENERAL.CONNECTION dev show wlan0 2>/dev/null")
     if 'connected' in output.lower():
         status['wifi_connected'] = True
@@ -140,7 +144,7 @@ def get_status():
         ip_match = run_cmd("curl -s --max-time 5 https://api.ipify.org 2>/dev/null")
         status['vpn_ip'] = ip_match[0] if ip_match[1] == 0 else ''
 
-    # Check internet
+    # Check internet (ping test)
     _, code = run_cmd("ping -c 1 -W 3 8.8.8.8 2>/dev/null")
     status['internet'] = (code == 0)
 
@@ -160,12 +164,21 @@ def connect_wifi(ssid, password):
         cmd = f'nmcli dev wifi connect "{ssid}" ifname wlan0'
 
     output, code = run_cmd(cmd, timeout=45)
+
+    if code == 0:
+        # WiFi connected - enable internet mode so clients can access network
+        time.sleep(2)
+        remove_dns_redirect()
+        setup_internet_mode_firewall()
+
     return code == 0, output
 
 
 def connect_vpn():
     """Connect to NordVPN"""
     output, code = run_cmd("nordvpn connect", timeout=30)
+    if code == 0:
+        time.sleep(2)  # Wait for interface to come up
     return code == 0, output
 
 
@@ -243,16 +256,16 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
     def show_home(self):
         status = get_status()
 
-        content = '<h1>VPN Router Setup</h1>'
+        content = '<h1>VPN Router</h1>'
 
         # Status card
-        content += '<div class="card"><h2>Current Status</h2>'
+        content += '<div class="card"><h2>Status</h2>'
 
         # WiFi status
         if status['wifi_connected']:
             content += f'''<div class="status">
                 <span class="status-dot green"></span>
-                <span>WiFi: Connected to {html.escape(status['wifi_ssid'])}</span>
+                <span>WiFi: {html.escape(status['wifi_ssid'])}</span>
             </div>'''
         else:
             content += '''<div class="status">
@@ -264,19 +277,19 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
         if status['vpn_connected']:
             content += f'''<div class="status">
                 <span class="status-dot green"></span>
-                <span>VPN: Connected (IP: {status['vpn_ip']})</span>
+                <span>VPN: Connected ({status['vpn_ip']})</span>
             </div>'''
         else:
             content += '''<div class="status">
                 <span class="status-dot yellow"></span>
-                <span>VPN: Disconnected</span>
+                <span>VPN: Off</span>
             </div>'''
 
         # Internet status
         if status['internet']:
             content += '''<div class="status">
                 <span class="status-dot green"></span>
-                <span>Internet: Available</span>
+                <span>Internet: OK</span>
             </div>'''
         else:
             content += '''<div class="status">
@@ -286,27 +299,37 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
 
         content += '</div>'
 
+        # Warning if connected without VPN
+        if status['wifi_connected'] and status['internet'] and not status['vpn_connected']:
+            content += '''<div class="message warning">
+                Traffic is NOT encrypted. Enable VPN for protection.
+            </div>'''
+
         # Actions
-        content += '<div class="card"><h2>Quick Actions</h2>'
-        content += '<a href="/scan"><button>Configure WiFi Network</button></a>'
+        content += '<div class="card"><h2>Controls</h2>'
 
+        # WiFi button
+        content += '<a href="/scan"><button>Select WiFi Network</button></a>'
+
+        # Show hotel portal button if WiFi connected but no internet
         if status['wifi_connected'] and not status['internet']:
-            content += '<a href="/hotel-portal"><button class="secondary">Open Hotel Portal</button></a>'
+            content += '<a href="/hotel-portal"><button class="secondary">Complete Hotel Login</button></a>'
 
-        if status['wifi_connected'] and status['internet']:
+        # VPN controls - show if WiFi is connected
+        if status['wifi_connected']:
             if status['vpn_connected']:
-                content += '<a href="/vpn/disconnect"><button class="secondary">Disconnect VPN</button></a>'
+                content += '<a href="/vpn/disconnect"><button class="danger">Disable VPN</button></a>'
             else:
-                content += '<a href="/vpn/connect"><button>Connect VPN</button></a>'
+                content += '<a href="/vpn/connect"><button class="secondary">Enable VPN</button></a>'
 
         content += '</div>'
 
         self.send_html(content)
 
     def show_scan(self):
-        content = '<h1>Select WiFi Network</h1>'
+        content = '<h1>Select WiFi</h1>'
         content += '<div class="card">'
-        content += '<div class="loading"><div class="spinner"></div><p>Scanning for networks...</p></div>'
+        content += '<div class="loading"><div class="spinner"></div><p>Scanning...</p></div>'
         content += '''
         <script>
         fetch('/api/networks')
@@ -315,13 +338,14 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
                 let html = '<form method="POST" action="/connect">';
                 html += '<ul class="network-list">';
                 networks.forEach(n => {
-                    html += `<li class="network-item" onclick="selectNetwork(this, '${n.ssid.replace(/'/g, "\\'")}')">
-                        ${n.ssid} <span class="signal">${n.signal}% ${n.security ? '🔒' : ''}</span>
-                    </li>`;
+                    const ssidEsc = n.ssid.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+                    html += '<li class="network-item" onclick="selectNetwork(this, \\'' + ssidEsc + '\\')">';
+                    html += n.ssid + ' <span class="signal">' + n.signal + '% ' + (n.security ? '🔒' : '') + '</span>';
+                    html += '</li>';
                 });
                 html += '</ul>';
                 html += '<input type="hidden" name="ssid" id="ssid">';
-                html += '<input type="password" name="password" placeholder="WiFi Password">';
+                html += '<input type="password" name="password" placeholder="Password (if required)">';
                 html += '<button type="submit">Connect</button>';
                 html += '</form>';
                 html += '<a href="/"><button class="secondary">Cancel</button></a>';
@@ -345,70 +369,67 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
         success, msg = connect_wifi(ssid, password)
 
         if success:
-            content += '<div class="message success">Connected successfully!</div>'
-            content += '<p>Checking for captive portal...</p>'
+            content += '<div class="message success">Connected!</div>'
 
-            # Check for captive portal
+            # Check for hotel captive portal
             time.sleep(2)
             status = get_status()
             if status['wifi_connected'] and not status['internet']:
                 content += '''<div class="message info">
-                    Hotel captive portal detected. You may need to accept terms.
+                    Hotel login may be required.
                 </div>
-                <a href="/hotel-portal"><button>Open Hotel Portal</button></a>'''
+                <a href="/hotel-portal"><button>Complete Hotel Login</button></a>'''
             else:
-                content += '<div class="message success">Internet is available!</div>'
-                content += '<a href="/vpn/connect"><button>Connect VPN</button></a>'
+                content += '<div class="message success">Internet available!</div>'
+                content += '<a href="/vpn/connect"><button>Enable VPN</button></a>'
         else:
-            content += f'<div class="message error">Connection failed: {html.escape(msg)}</div>'
+            content += f'<div class="message error">Failed: {html.escape(msg)}</div>'
             content += '<a href="/scan"><button class="secondary">Try Again</button></a>'
 
-        content += '<a href="/"><button class="secondary">Back to Home</button></a>'
+        content += '<a href="/"><button class="secondary">Home</button></a>'
         content += '</div>'
         self.send_html(content)
 
     def show_hotel_portal(self):
-        content = '<h1>Hotel Captive Portal</h1>'
+        content = '<h1>Hotel Login</h1>'
         content += '<div class="card">'
         content += '''<div class="message info">
-            <p>To access the hotel's login page:</p>
+            <p>To complete hotel WiFi login:</p>
             <ol style="margin-left: 20px; margin-top: 10px;">
                 <li>Open a new browser tab</li>
-                <li>Go to: <a href="http://neverssl.com" target="_blank">http://neverssl.com</a></li>
-                <li>You should be redirected to the hotel login</li>
-                <li>Accept terms / login</li>
-                <li>Return here and click the button below</li>
+                <li>Go to: <a href="http://neverssl.com" target="_blank">neverssl.com</a></li>
+                <li>Complete the hotel login/accept terms</li>
+                <li>Return here</li>
             </ol>
         </div>'''
-        content += '<a href="/"><button>I\'ve Completed Login</button></a>'
+        content += '<a href="/"><button>Done</button></a>'
         content += '</div>'
         self.send_html(content)
 
     def vpn_action(self, action):
-        content = f'<h1>VPN {action.title()}</h1>'
+        content = f'<h1>VPN</h1>'
         content += '<div class="card">'
 
         if action == 'connect':
+            content += '<p>Connecting to VPN...</p>'
             success, msg = connect_vpn()
             if success:
                 content += '<div class="message success">VPN Connected!</div>'
-                # Remove DNS redirect so clients can access the internet
-                remove_dns_redirect()
-                # Set up VPN kill switch firewall
+                # Switch to VPN kill switch mode
                 if setup_vpn_mode_firewall():
-                    content += '<div class="message success">Kill switch enabled - traffic protected!</div>'
+                    content += '<div class="message success">Kill switch enabled</div>'
                 else:
-                    content += '<div class="message error">Warning: Could not enable kill switch</div>'
+                    content += '<div class="message error">Warning: Kill switch failed</div>'
             else:
                 content += f'<div class="message error">Failed: {html.escape(msg)}</div>'
         else:
             disconnect_vpn()
-            # Re-enable captive portal mode
-            setup_dns_redirect()
-            setup_captive_mode_firewall()
-            content += '<div class="message info">VPN Disconnected - captive portal mode restored</div>'
+            # Switch back to internet mode (no VPN)
+            setup_internet_mode_firewall()
+            content += '<div class="message info">VPN Disconnected</div>'
+            content += '<div class="message warning">Traffic is no longer encrypted!</div>'
 
-        content += '<a href="/"><button>Back to Home</button></a>'
+        content += '<a href="/"><button>Home</button></a>'
         content += '</div>'
         self.send_html(content)
 
@@ -422,7 +443,6 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
 
 def setup_dns_redirect():
     """Set up DNS to redirect all requests to captive portal"""
-    # Add dnsmasq rule to redirect all DNS to local portal
     dnsmasq_conf = "/etc/dnsmasq.d/captive-portal.conf"
     try:
         with open(dnsmasq_conf, 'w') as f:
@@ -430,6 +450,17 @@ def setup_dns_redirect():
         subprocess.run(["systemctl", "restart", "dnsmasq"], check=False)
     except Exception as e:
         print(f"Warning: Could not configure DNS redirect: {e}")
+
+
+def remove_dns_redirect():
+    """Remove captive portal DNS redirect"""
+    dnsmasq_conf = "/etc/dnsmasq.d/captive-portal.conf"
+    try:
+        if os.path.exists(dnsmasq_conf):
+            os.remove(dnsmasq_conf)
+        subprocess.run(["systemctl", "restart", "dnsmasq"], check=False)
+    except Exception:
+        pass
 
 
 def find_script(name):
@@ -453,6 +484,22 @@ def setup_captive_mode_firewall():
         print("Warning: iptables-captive-mode.sh not found")
 
 
+def setup_internet_mode_firewall():
+    """Set up firewall that allows internet without VPN"""
+    script = find_script("iptables-internet-mode.sh")
+    if script:
+        result = subprocess.run(["bash", script], capture_output=True, text=True)
+        if result.returncode == 0:
+            print("Internet mode firewall activated")
+            return True
+        else:
+            print(f"Failed to set up internet firewall: {result.stderr}")
+            return False
+    else:
+        print("Warning: iptables-internet-mode.sh not found")
+        return False
+
+
 def setup_vpn_mode_firewall():
     """Set up VPN kill switch firewall"""
     script = find_script("iptables-vpn-mode.sh")
@@ -469,36 +516,30 @@ def setup_vpn_mode_firewall():
         return False
 
 
-def remove_dns_redirect():
-    """Remove captive portal DNS redirect"""
-    dnsmasq_conf = "/etc/dnsmasq.d/captive-portal.conf"
-    try:
-        if os.path.exists(dnsmasq_conf):
-            os.remove(dnsmasq_conf)
-        subprocess.run(["systemctl", "restart", "dnsmasq"], check=False)
-    except Exception:
-        pass
-
-
 def main():
     print(f"Starting VPN-AP Captive Portal on port {PORT}...")
 
-    # Check if VPN is already connected
+    # Check current state and set appropriate mode
     vpn_out, _ = run_cmd("nordvpn status 2>/dev/null")
+    wifi_out, _ = run_cmd("nmcli -t -f GENERAL.STATE dev show wlan0 2>/dev/null")
+
     if 'Connected' in vpn_out:
-        print("VPN already connected - setting up VPN kill switch mode")
+        print("VPN connected - enabling kill switch mode")
         remove_dns_redirect()
         setup_vpn_mode_firewall()
+    elif 'connected' in wifi_out.lower():
+        print("WiFi connected, no VPN - enabling internet mode")
+        remove_dns_redirect()
+        setup_internet_mode_firewall()
     else:
-        print("VPN not connected - enabling captive portal mode")
+        print("No WiFi - enabling captive portal mode")
         setup_dns_redirect()
         setup_captive_mode_firewall()
 
     try:
         with socketserver.TCPServer(("", PORT), CaptivePortalHandler) as httpd:
             httpd.allow_reuse_address = True
-            print(f"Captive Portal running at http://{AP_IP}/")
-            print("Connect to the 'TravelRouter' WiFi to configure.")
+            print(f"Portal running at http://{AP_IP}/")
             httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down...")
