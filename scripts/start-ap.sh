@@ -37,18 +37,7 @@ systemctl stop dnsmasq 2>/dev/null || true
 # Small delay to ensure interface is ready
 sleep 1
 
-# Start dnsmasq (DHCP/DNS)
-echo "Starting dnsmasq..."
-systemctl start dnsmasq
-if systemctl is-active --quiet dnsmasq; then
-    echo -e "${GREEN}dnsmasq started successfully${NC}"
-else
-    echo -e "${RED}Failed to start dnsmasq${NC}"
-    systemctl status dnsmasq
-    exit 1
-fi
-
-# Start hostapd (Access Point)
+# Start hostapd FIRST (this creates the AP interface properly)
 echo "Starting hostapd..."
 systemctl start hostapd
 if systemctl is-active --quiet hostapd; then
@@ -56,6 +45,23 @@ if systemctl is-active --quiet hostapd; then
 else
     echo -e "${RED}Failed to start hostapd${NC}"
     systemctl status hostapd
+    exit 1
+fi
+
+# Wait for interface to be fully initialized
+sleep 2
+
+# Ensure static IP is set after hostapd starts
+ip addr add 192.168.4.1/24 dev $AP_INTERFACE 2>/dev/null || true
+
+# Start dnsmasq (DHCP/DNS) - must start AFTER hostapd
+echo "Starting dnsmasq..."
+systemctl start dnsmasq
+if systemctl is-active --quiet dnsmasq; then
+    echo -e "${GREEN}dnsmasq started successfully${NC}"
+else
+    echo -e "${RED}Failed to start dnsmasq${NC}"
+    systemctl status dnsmasq
     exit 1
 fi
 
