@@ -1,0 +1,91 @@
+#!/bin/bash
+# VPN-AP iptables rules with kill switch
+# This script sets up NAT and firewall rules to route AP traffic through VPN
+
+# Exit on error
+set -e
+
+# Configuration
+AP_INTERFACE="wlan1"           # USB WiFi adapter (Access Point)
+AP_SUBNET="192.168.4.0/24"     # AP client subnet
+VPN_INTERFACE="wg0"            # WireGuard interface
+
+# Detect upstream interface (eth0 or wlan0)
+if ip link show eth0 2>/dev/null | grep -q "state UP"; then
+    UPSTREAM_INTERFACE="eth0"
+elif ip link show wlan0 2>/dev/null | grep -q "state UP"; then
+    UPSTREAM_INTERFACE="wlan0"
+else
+    echo "Warning: No upstream interface detected. Using eth0 as default."
+    UPSTREAM_INTERFACE="eth0"
+fi
+
+echo "Configuring iptables..."
+echo "  AP Interface: $AP_INTERFACE"
+echo "  VPN Interface: $VPN_INTERFACE"
+echo "  Upstream Interface: $UPSTREAM_INTERFACE"
+
+# Flush existing rules
+iptables -F
+iptables -t nat -F
+iptables -t mangle -F
+iptables -X 2>/dev/null || true
+
+# Default policies - DROP everything by default (kill switch)
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT DROP
+
+# Allow loopback
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+# Allow established/related connections
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# Allow SSH to the Pi (from AP clients only for security)
+iptables -A INPUT -i $AP_INTERFACE -p tcp --dport 22 -j ACCEPT
+
+# Allow DHCP and DNS on AP interface
+iptables -A INPUT -i $AP_INTERFACE -p udp --dport 67 -j ACCEPT  # DHCP
+iptables -A INPUT -i $AP_INTERFACE -p udp --dport 53 -j ACCEPT  # DNS
+iptables -A INPUT -i $AP_INTERFACE -p tcp --dport 53 -j ACCEPT  # DNS
+
+# Allow ping to Pi from AP clients
+iptables -A INPUT -i $AP_INTERFACE -p icmp --icmp-type echo-request -j ACCEPT
+
+# ============================================
+# VPN ROUTING (Kill Switch)
+# ============================================
+
+# Allow WireGuard traffic to/from upstream (to establish VPN tunnel)
+iptables -A OUTPUT -o $UPSTREAM_INTERFACE -p udp --dport 51820 -j ACCEPT
+iptables -A INPUT -i $UPSTREAM_INTERFACE -p udp --sport 51820 -j ACCEPT
+
+# Allow DHCP on upstream (to get IP from hotel network)
+iptables -A OUTPUT -o $UPSTREAM_INTERFACE -p udp --dport 67:68 -j ACCEPT
+iptables -A INPUT -i $UPSTREAM_INTERFACE -p udp --sport 67:68 -j ACCEPT
+
+# Allow all traffic through VPN interface
+iptables -A OUTPUT -o $VPN_INTERFACE -j ACCEPT
+iptables -A INPUT -i $VPN_INTERFACE -j ACCEPT
+
+# Forward traffic from AP to VPN (and back)
+iptables -A FORWARD -i $AP_INTERFACE -o $VPN_INTERFACE -j ACCEPT
+iptables -A FORWARD -i $VPN_INTERFACE -o $AP_INTERFACE -j ACCEPT
+
+# NAT: Masquerade AP traffic through VPN
+iptables -t nat -A POSTROUTING -s $AP_SUBNET -o $VPN_INTERFACE -j MASQUERADE
+
+# ============================================
+# KILL SWITCH
+# ============================================
+# All other traffic is DROPPED by default policies
+# This means if VPN goes down, no traffic leaks to hotel network
+
+echo "iptables rules configured successfully!"
+echo ""
+echo "Kill switch is ACTIVE - traffic only flows through VPN"
+echo "To check rules: sudo iptables -L -v -n"

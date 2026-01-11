@@ -1,0 +1,34 @@
+[Unit]
+Description=VPN Access Point Router
+Documentation=https://github.com/RFingAdam/VPN-AP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Start the access point (AP will be ready for connections)
+ExecStart=/usr/local/bin/vpn-ap-start
+
+# Start captive portal web interface
+ExecStartPost=/bin/systemctl start captive-portal
+
+# Note: VPN is NOT auto-started - user configures WiFi via captive portal first
+# The captive portal will connect VPN after WiFi is configured
+
+# Stop services on service stop
+ExecStop=/usr/bin/nordvpn disconnect
+ExecStop=/usr/bin/systemctl stop captive-portal
+ExecStop=/usr/bin/systemctl stop hostapd
+ExecStop=/usr/bin/systemctl stop dnsmasq
+
+# Clear iptables on stop
+ExecStopPost=/sbin/iptables -F
+ExecStopPost=/sbin/iptables -t nat -F
+ExecStopPost=/sbin/iptables -P INPUT ACCEPT
+ExecStopPost=/sbin/iptables -P FORWARD ACCEPT
+ExecStopPost=/sbin/iptables -P OUTPUT ACCEPT
+
+[Install]
+WantedBy=multi-user.target
