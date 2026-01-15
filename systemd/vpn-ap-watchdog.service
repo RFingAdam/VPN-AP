@@ -4,6 +4,9 @@ After=network.target
 
 [Service]
 Type=oneshot
+Environment=VPN_INTERFACE=wg0
+Environment=UPSTREAM_INTERFACES="eth0 wlan0"
+EnvironmentFile=-/etc/default/vpn-ap
 ExecStart=/home/pi/VPN-AP/scripts/watchdog.sh
 StandardOutput=null
 StandardError=journal

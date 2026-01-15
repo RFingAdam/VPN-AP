@@ -14,6 +14,13 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+VPN_INTERFACE="${VPN_INTERFACE:-wg0}"
+VPN_START_CMD="${VPN_START_CMD:-/usr/local/bin/vpn-start}"
+
+if [ ! -x "$VPN_START_CMD" ]; then
+    VPN_START_CMD="$(dirname "$0")/start-vpn.sh"
+fi
+
 show_status() {
     echo -e "${GREEN}Current Network Status:${NC}"
     echo ""
@@ -38,10 +45,11 @@ show_status() {
     # VPN status (check both NordVPN and WireGuard)
     if command -v nordvpn &> /dev/null && nordvpn status 2>/dev/null | grep -q "Connected"; then
         echo -e "  VPN (NordVPN): ${GREEN}CONNECTED${NC}"
-    elif ip link show wg0 2>/dev/null | grep -q "UP"; then
-        echo -e "  VPN (wg0): ${GREEN}CONNECTED${NC}"
+    elif ip link show "$VPN_INTERFACE" 2>/dev/null | grep -q "UP"; then
+        echo -e "  VPN ($VPN_INTERFACE): ${GREEN}CONNECTED${NC}"
     else
         echo -e "  VPN: ${YELLOW}DISCONNECTED${NC}"
+    fi
     fi
 
     echo ""
@@ -76,14 +84,7 @@ use_ethernet() {
 
         # Restart VPN to use new route
         echo "Restarting VPN..."
-        if command -v nordvpn &> /dev/null; then
-            nordvpn disconnect 2>/dev/null || true
-            sleep 1
-            nordvpn connect
-        else
-            wg-quick down wg0 2>/dev/null || true
-            wg-quick up wg0
-        fi
+        VPN_FORCE_RECONNECT=1 "$VPN_START_CMD"
 
         show_status
     else
@@ -126,14 +127,7 @@ use_wifi() {
 
         # Restart VPN to use new route
         echo "Restarting VPN..."
-        if command -v nordvpn &> /dev/null; then
-            nordvpn disconnect 2>/dev/null || true
-            sleep 1
-            nordvpn connect
-        else
-            wg-quick down wg0 2>/dev/null || true
-            wg-quick up wg0
-        fi
+        VPN_FORCE_RECONNECT=1 "$VPN_START_CMD"
 
         show_status
     else
