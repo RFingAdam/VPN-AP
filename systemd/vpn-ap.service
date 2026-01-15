@@ -6,14 +6,13 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type=oneshot
+RemainAfterExit=yes
 Environment=AP_INTERFACE=wlan1
 Environment=VPN_INTERFACE=wg0
 Environment=VPN_MODE=auto
 Environment=HOME=/root
 EnvironmentFile=-/etc/default/vpn-ap
-Restart=always
-RestartSec=5
 
 # Start the access point (AP will be ready for connections)
 ExecStart=/usr/local/bin/vpn-ap-start
