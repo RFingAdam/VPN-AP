@@ -20,6 +20,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_DIR="$PROJECT_DIR/config"
+VPN_INTERFACE="${VPN_INTERFACE:-wg0}"
 
 echo -e "${GREEN}================================${NC}"
 echo -e "${GREEN}VPN-AP Setup Script${NC}"
@@ -151,16 +152,34 @@ fi
 # Point hostapd to config file
 echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' > /etc/default/hostapd
 
-# Copy WireGuard template if wg0.conf doesn't exist
-if [ ! -f /etc/wireguard/wg0.conf ]; then
-    cp "$CONFIG_DIR/wg0.conf.template" /etc/wireguard/wg0.conf.template
-    echo -e "${YELLOW}WireGuard template copied to /etc/wireguard/wg0.conf.template${NC}"
-    echo "You need to create /etc/wireguard/wg0.conf with your NordVPN credentials"
+# Create defaults for vpn-ap watchdog (do not overwrite)
+DEFAULTS_FILE="/etc/default/vpn-ap"
+if [ ! -f "$DEFAULTS_FILE" ]; then
+    cat > "$DEFAULTS_FILE" << EOF
+# VPN-AP watchdog defaults
+AP_INTERFACE=$USB_WLAN
+VPN_INTERFACE=$VPN_INTERFACE
+VPN_MODE=auto
+UPSTREAM_INTERFACES="eth0 wlan0"
+CHECK_INTERVAL=30
+AP_RESTART_COOLDOWN=60
+VPN_RESTART_COOLDOWN=120
+VPN_HANDSHAKE_MAX_AGE=180
+STARTUP_DELAY=3
+EOF
+fi
+
+# Copy WireGuard template if config doesn't exist
+if [ ! -f "/etc/wireguard/${VPN_INTERFACE}.conf" ]; then
+    cp "$CONFIG_DIR/wg0.conf.template" "/etc/wireguard/${VPN_INTERFACE}.conf.template"
+    echo -e "${YELLOW}WireGuard template copied to /etc/wireguard/${VPN_INTERFACE}.conf.template${NC}"
+    echo "You need to create /etc/wireguard/${VPN_INTERFACE}.conf with your NordVPN credentials"
 fi
 
 # Copy scripts to /usr/local/bin
 cp "$SCRIPT_DIR/start-ap.sh" /usr/local/bin/vpn-ap-start
 cp "$SCRIPT_DIR/start-vpn.sh" /usr/local/bin/vpn-start
+cp "$SCRIPT_DIR/stop-vpn.sh" /usr/local/bin/vpn-stop
 cp "$SCRIPT_DIR/switch-upstream.sh" /usr/local/bin/vpn-ap-switch
 cp "$SCRIPT_DIR/captive-portal.sh" /usr/local/bin/captive-portal
 cp "$SCRIPT_DIR/emergency-recovery.sh" /usr/local/bin/vpn-ap-emergency
@@ -170,9 +189,32 @@ cp "$SCRIPT_DIR/iptables-internet-mode.sh" /usr/local/bin/
 cp "$SCRIPT_DIR/iptables-vpn-mode.sh" /usr/local/bin/
 chmod +x /usr/local/bin/vpn-ap-*
 chmod +x /usr/local/bin/vpn-start
+chmod +x /usr/local/bin/vpn-stop
 chmod +x /usr/local/bin/captive-portal
 chmod +x /usr/local/bin/iptables-*.sh
 
+# Add restart policies for core services
+mkdir -p /etc/systemd/system/hostapd.service.d
+cat > /etc/systemd/system/hostapd.service.d/vpn-ap.conf << 'EOF'
+[Unit]
+StartLimitIntervalSec=0
+
+[Service]
+Restart=on-failure
+RestartSec=5
+EOF
+
+mkdir -p /etc/systemd/system/dnsmasq.service.d
+cat > /etc/systemd/system/dnsmasq.service.d/vpn-ap.conf << 'EOF'
+[Unit]
+StartLimitIntervalSec=0
+
+[Service]
+Restart=on-failure
+RestartSec=5
+EOF
+
+# Install systemd service
 # Create state directory for recovery
 mkdir -p /var/lib/vpn-ap
 chown root:root /var/lib/vpn-ap

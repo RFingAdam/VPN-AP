@@ -7,6 +7,9 @@ set -o pipefail
 LOGFILE="/var/log/vpn-ap-watchdog.log"
 STATE_DIR="/var/lib/vpn-ap"
 MAX_LOG_SIZE=1048576  # 1MB
+UPSTREAM_INTERFACES="${UPSTREAM_INTERFACES:-eth0 wlan0}"
+VPN_INTERFACE="${VPN_INTERFACE:-wg0}"
+VPN_START_CMD="${VPN_START_CMD:-/usr/local/bin/vpn-start}"
 
 # Ensure state directory exists
 mkdir -p "$STATE_DIR"
@@ -17,6 +20,37 @@ log() {
     if [ -f "$LOGFILE" ] && [ $(stat -f%z "$LOGFILE" 2>/dev/null || stat -c%s "$LOGFILE" 2>/dev/null) -gt $MAX_LOG_SIZE ]; then
         mv "$LOGFILE" "${LOGFILE}.old"
     fi
+}
+
+get_default_route_interface() {
+    ip route show default 0.0.0.0/0 2>/dev/null | awk '{
+        for (i = 1; i <= NF; i++) {
+            if ($i == "dev") {
+                print $(i + 1)
+                exit
+            }
+        }
+    }'
+}
+
+get_best_upstream() {
+    local iface
+    iface="$(get_default_route_interface)"
+    if [ -n "$iface" ]; then
+        echo "$iface"
+        return 0
+    fi
+
+    for iface in $UPSTREAM_INTERFACES; do
+        if ip link show "$iface" >/dev/null 2>&1; then
+            if ip link show "$iface" | grep -q "state UP"; then
+                echo "$iface"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
 }
 
 # Track recovery attempts to avoid infinite loops
@@ -135,11 +169,36 @@ check_vpn() {
     fi
 
     # Check WireGuard
-    if ip link show wg0 2>/dev/null | grep -q "UP"; then
+    if ip link show "$VPN_INTERFACE" 2>/dev/null | grep -q "UP"; then
         return 0
     fi
 
     return 1
+}
+
+maybe_restart_vpn_on_upstream_change() {
+    local current_upstream
+    current_upstream="$(get_best_upstream || true)"
+    if [ -z "$current_upstream" ]; then
+        return 0
+    fi
+
+    local last_upstream
+    last_upstream="$(cat "$STATE_DIR/last_upstream" 2>/dev/null || echo "")"
+
+    if [ -n "$last_upstream" ] && [ "$current_upstream" != "$last_upstream" ]; then
+        if check_vpn; then
+            if [ -x "$VPN_START_CMD" ]; then
+                log "INFO: Upstream changed from ${last_upstream} to ${current_upstream}. Restarting VPN..."
+                VPN_FORCE_RECONNECT=1 "$VPN_START_CMD" >/dev/null 2>&1 || \
+                    log "ERROR: VPN restart failed after upstream change"
+            else
+                log "WARN: VPN start command not found: $VPN_START_CMD"
+            fi
+        fi
+    fi
+
+    echo "$current_upstream" > "$STATE_DIR/last_upstream"
 }
 
 # Recovery functions
@@ -327,6 +386,9 @@ main() {
         recover_portal
         issues_found=1
     fi
+
+    # Restart VPN if upstream changes while connected
+    maybe_restart_vpn_on_upstream_change
 
     # Log summary
     if [ "$issues_found" -eq 0 ]; then

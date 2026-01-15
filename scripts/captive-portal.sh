@@ -21,22 +21,24 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 AP_INTERFACE="${AP_INTERFACE:-wlan1}"
+VPN_INTERFACE="${VPN_INTERFACE:-wg0}"
 AP_SUBNET="192.168.4.0/24"
+VPN_STOP_CMD="${VPN_STOP_CMD:-/usr/local/bin/vpn-stop}"
+VPN_START_CMD="${VPN_START_CMD:-/usr/local/bin/vpn-start}"
+
+if [ ! -x "$VPN_STOP_CMD" ]; then
+    VPN_STOP_CMD="$(dirname "$0")/stop-vpn.sh"
+fi
+
+if [ ! -x "$VPN_START_CMD" ]; then
+    VPN_START_CMD="$(dirname "$0")/start-vpn.sh"
+fi
 
 # Detect upstream
 if ip link show eth0 2>/dev/null | grep -q "state UP"; then
     UPSTREAM="eth0"
 else
     UPSTREAM="wlan0"
-fi
-
-# Detect VPN method
-if command -v nordvpn &> /dev/null && nordvpn status 2>/dev/null | grep -q "Status: Connected"; then
-    VPN_METHOD="nordvpn"
-elif ip link show wg0 2>/dev/null | grep -q "UP"; then
-    VPN_METHOD="wireguard"
-else
-    VPN_METHOD="none"
 fi
 
 enable_captive_portal_access() {
@@ -50,12 +52,7 @@ enable_captive_portal_access() {
 
     # Stop VPN based on method
     echo "Stopping VPN..."
-    if [[ "$VPN_METHOD" == "nordvpn" ]]; then
-        nordvpn disconnect 2>/dev/null || true
-    elif [[ "$VPN_METHOD" == "wireguard" ]]; then
-        wg-quick down wg0 2>/dev/null || true
-    fi
-
+    "$VPN_STOP_CMD"
     sleep 2
 
     # Clear restrictive rules
@@ -111,24 +108,10 @@ restore_vpn() {
     echo "Restoring VPN protection..."
 
     # Restart the VPN with full protection
-    if [[ "$VPN_METHOD" == "nordvpn" ]] || command -v nordvpn &> /dev/null; then
-        echo "Reconnecting NordVPN..."
-        nordvpn connect
-        sleep 3
-        # Re-add forwarding rules for AP
-        VPN_INTERFACE=$(ip link show | grep -oE "nordlynx[0-9]*" | head -1)
-        if [ -n "$VPN_INTERFACE" ]; then
-            iptables -t nat -A POSTROUTING -s $AP_SUBNET -o $VPN_INTERFACE -j MASQUERADE
-            iptables -I FORWARD 1 -i $AP_INTERFACE -o $VPN_INTERFACE -j ACCEPT
-            iptables -I FORWARD 2 -i $VPN_INTERFACE -o $AP_INTERFACE -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-        fi
-        echo -e "${GREEN}NordVPN protection restored!${NC}"
-    elif [ -f /etc/wireguard/wg0.conf ]; then
-        # Run the start-vpn script which sets up kill switch
-        /usr/local/bin/vpn-start 2>/dev/null || bash "$(dirname "$0")/start-vpn.sh"
+    if "$VPN_START_CMD" 2>/dev/null; then
         echo -e "${GREEN}VPN protection restored!${NC}"
     else
-        echo -e "${YELLOW}No VPN configured. Traffic is unprotected.${NC}"
+        echo -e "${YELLOW}VPN restore failed. Check VPN configuration.${NC}"
     fi
 }
 

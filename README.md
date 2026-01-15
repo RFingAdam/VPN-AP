@@ -36,6 +36,7 @@
 - **NordVPN Integration** - Uses NordVPN CLI with NordLynx (WireGuard) protocol
 - **Kill Switch** - If VPN disconnects, all client internet traffic stops (no leaks)
 - **Hotel WiFi Support** - Easy captive portal bypass for hotel/airport networks
+- **Dual Upstream Backhaul** - Ethernet preferred when available, WiFi fallback
 
 ### Reliability Features (v1.2.0+)
 - **Automatic Watchdog** - Monitors services every minute, auto-recovers failures
@@ -133,6 +134,32 @@ Access the configuration portal at: **http://192.168.4.1**
 | `/hotel-portal` | Instructions for hotel captive portals |
 | `/emergency` | Emergency recovery options |
 | `/status` | JSON status for debugging |
+
+### VPN modes
+
+By default the system uses a WireGuard config at `/etc/wireguard/wg0.conf`.
+
+To use NordVPN CLI (NordLynx):
+- Set `VPN_MODE=nordvpn` and `VPN_INTERFACE=nordlynx` in `/etc/default/vpn-ap`
+- Restart: `sudo systemctl restart vpn-ap`
+
+You can also set `VPN_MODE=wireguard` (explicit) or `VPN_MODE=auto` to choose based on whether the `nordvpn` CLI is installed.
+If your VPN uses a non-standard WireGuard port, set `VPN_ENDPOINT_PORT=XXXXX` in `/etc/default/vpn-ap`.
+
+### Backhaul selection
+
+By default the watchdog will restart the VPN if the default route changes (for example, when you plug in Ethernet).
+The firewall allows DHCP/VPN on both `eth0` and `wlan0` so it can fail over safely.
+
+To customize which upstream interfaces are allowed, set:
+- `UPSTREAM_INTERFACES="eth0 wlan0"` in `/etc/default/vpn-ap`
+
+### Watchdog tuning
+
+The watchdog runs every minute to keep the AP and VPN healthy.
+
+- Settings live in `/etc/default/vpn-ap`
+- Logs: `journalctl -u vpn-ap-watchdog`
 
 ### Emergency Recovery
 
@@ -270,7 +297,6 @@ nordvpn disconnect
 nordvpn connect us
 nordvpn connect uk
 ```
-
 ### Firewall Modes
 
 ```bash
