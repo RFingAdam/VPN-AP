@@ -5,7 +5,12 @@ Wants=hostapd.service dnsmasq.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/pi/VPN-AP/scripts/captive-portal-server.py
+
+# Load configuration including PROJECT_DIR
+EnvironmentFile=-/etc/default/vpn-ap
+
+# Use PROJECT_DIR to locate script (defaults to /home/pi/VPN-AP if not set)
+ExecStart=/bin/bash -c '/usr/bin/python3 ${PROJECT_DIR:-/home/pi/VPN-AP}/scripts/captive-portal-server.py'
 Restart=on-failure
 RestartSec=5
 User=root

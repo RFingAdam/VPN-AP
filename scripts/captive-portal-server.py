@@ -519,10 +519,14 @@ def remove_dns_redirect():
 
 
 def find_script(name):
-    """Find script in known locations"""
+    """Find script in known locations, respecting PROJECT_DIR env var"""
+    # Get PROJECT_DIR from environment (set by systemd or defaults)
+    project_dir = os.environ.get('PROJECT_DIR', '/home/pi/VPN-AP')
+
     paths = [
         f"/usr/local/bin/{name}",
-        f"/home/pi/VPN-AP/scripts/{name}",
+        f"{project_dir}/scripts/{name}",
+        f"/home/pi/VPN-AP/scripts/{name}",  # Fallback for backwards compatibility
     ]
     for p in paths:
         if os.path.exists(p):
