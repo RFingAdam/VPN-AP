@@ -156,11 +156,19 @@ echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' > /etc/default/hostapd
 DEFAULTS_FILE="/etc/default/vpn-ap"
 if [ ! -f "$DEFAULTS_FILE" ]; then
     cat > "$DEFAULTS_FILE" << EOF
-# VPN-AP watchdog defaults
+# VPN-AP configuration defaults
+# Customize these values for your deployment
+
+# Path to VPN-AP project directory (change if installed elsewhere)
+PROJECT_DIR=$PROJECT_DIR
+
+# Network interfaces
 AP_INTERFACE=$USB_WLAN
 VPN_INTERFACE=$VPN_INTERFACE
 VPN_MODE=auto
 UPSTREAM_INTERFACES="eth0 wlan0"
+
+# Watchdog timing settings
 CHECK_INTERVAL=30
 AP_RESTART_COOLDOWN=60
 VPN_RESTART_COOLDOWN=120

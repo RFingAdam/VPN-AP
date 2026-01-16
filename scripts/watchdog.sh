@@ -310,6 +310,62 @@ recover_portal() {
     fi
 }
 
+# Reinforce power save off on AP interface to prevent long-running disconnects
+reinforce_power_save_off() {
+    local ap_if="${AP_IF:-wlan1}"
+    iw dev "$ap_if" set power_save off 2>/dev/null || true
+}
+
+# Escalation: Full reset when normal recovery exhausted
+# This is a more aggressive recovery that reloads the wireless driver
+escalate_ap_recovery() {
+    local ap_if="${AP_IF:-wlan1}"
+
+    log "WARN: Escalating to full AP recovery - reloading wireless subsystem"
+
+    # Stop all AP-related services
+    systemctl stop hostapd 2>/dev/null || true
+    systemctl stop dnsmasq 2>/dev/null || true
+    sleep 2
+
+    # Unblock and reset wireless
+    rfkill unblock wifi 2>/dev/null || true
+
+    # Bring down and up the interface
+    ip link set "$ap_if" down 2>/dev/null || true
+    sleep 2
+    ip link set "$ap_if" up 2>/dev/null || true
+    sleep 2
+
+    # Re-apply power save off
+    iw dev "$ap_if" set power_save off 2>/dev/null || true
+
+    # Set IP
+    ip addr flush dev "$ap_if" 2>/dev/null || true
+    ip addr add 192.168.4.1/24 dev "$ap_if" 2>/dev/null || true
+    sleep 1
+
+    # Restart services
+    systemctl start hostapd
+    sleep 3
+    systemctl start dnsmasq
+    sleep 1
+
+    # Reset all recovery counters to give normal recovery a fresh start
+    reset_recovery_count "ap_interface"
+    reset_recovery_count "hostapd"
+    reset_recovery_count "dnsmasq"
+
+    # Verify
+    if systemctl is-active --quiet hostapd && iw dev 2>/dev/null | grep -q "type AP"; then
+        log "INFO: Full AP recovery successful - AP is broadcasting"
+        return 0
+    else
+        log "ERROR: Full AP recovery failed - manual intervention may be needed"
+        return 1
+    fi
+}
+
 # Ensure SSH is always accessible
 ensure_ssh_access() {
     # Make sure SSH is running
@@ -363,6 +419,9 @@ main() {
     # Always ensure management access first (highest priority)
     ensure_management_access
 
+    # Reinforce power save off every cycle to prevent driver re-enabling it
+    reinforce_power_save_off
+
     # Check and recover AP interface
     if ! check_ap_interface; then
         recover_ap_interface
@@ -371,7 +430,14 @@ main() {
 
     # Check and recover hostapd
     if ! check_hostapd; then
-        recover_hostapd
+        if ! recover_hostapd; then
+            # Normal recovery failed (hit max attempts) - escalate
+            local hostapd_count=$(get_recovery_count "hostapd")
+            if [ "$hostapd_count" -ge 5 ]; then
+                log "WARN: Normal hostapd recovery exhausted, escalating..."
+                escalate_ap_recovery
+            fi
+        fi
         issues_found=1
     fi
 
