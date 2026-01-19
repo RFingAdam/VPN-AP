@@ -8,7 +8,8 @@ All notable changes to VPN-AP will be documented in this file.
 
 #### HaLow (802.11ah) Backhaul Support
 - **Long-range sub-GHz backhaul option** for remote deployments
-  - Supports Newracom-based HaLow modules (e.g., Murata)
+  - Supports Silex SX-SDMAH (Morse Micro MM6108 chipset)
+  - Supports Newracom NRC7292 based modules (e.g., Murata)
   - Operates on ~900 MHz for greater range than standard WiFi
   - Manual-only switching (not auto-selected during failover)
 
@@ -17,22 +18,27 @@ All notable changes to VPN-AP will be documented in this file.
   - `halow-disconnect` - Disconnect from HaLow network
   - Status display now shows HaLow connection state when enabled
 
-- **Dual connection methods**:
-  - `wpa_supplicant` - Standard Linux wireless (default)
-  - `nrc_start_py` - Newracom SDK for advanced features
+- **Three connection methods**:
+  - `silex` - Silex SX-SDMAH / Morse Micro tools (default)
+  - `wpa_supplicant` - Standard Linux wireless
+  - `nrc_start_py` - Newracom SDK for NRC7292 modules
 
 - **HaLow configuration options** in `/etc/default/vpn-ap`:
   - `HALOW_ENABLED` - Enable/disable HaLow support
-  - `HALOW_INTERFACE` - HaLow interface name (default: wlan2)
-  - `HALOW_CONNECTION_METHOD` - wpa_supplicant or nrc_start_py
+  - `HALOW_INTERFACE` - HaLow interface name (default: wlan0)
+  - `HALOW_CONNECTION_METHOD` - silex, wpa_supplicant, or nrc_start_py
   - `HALOW_SSID` / `HALOW_PASSWORD` - Network credentials
   - `HALOW_SECURITY` - open, wpa2, or sae (WPA3)
   - `HALOW_COUNTRY` - Regulatory domain (US, EU, JP, etc.)
+  - `SILEX_PATH` - Path to Silex SDK (default: /home/pi/sx-sdmah)
+  - `SILEX_WPA_SUPPLICANT` - Path to Silex wpa_supplicant
   - `NRC_PKG_PATH` - Path to Newracom SDK
 
 - **Setup script enhancements**:
+  - Auto-detects Silex SX-SDMAH SDK and wpa_supplicant
   - Auto-detects Newracom HaLow driver (nrc module)
   - Identifies HaLow interface during installation
+  - Sets appropriate connection method based on detected hardware
   - Adds HaLow configuration template to defaults file
 
 ### Changed
