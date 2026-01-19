@@ -8,7 +8,21 @@ UPSTREAM_IF="${UPSTREAM_IF:-wlan0}"
 AP_IP="192.168.4.1"
 AP_SUBNET="192.168.4.0/24"
 
+# Source HaLow config if available
+[ -f /etc/default/vpn-ap ] && . /etc/default/vpn-ap
+HALOW_IF="${HALOW_INTERFACE:-wlan2}"
+
+# Auto-detect upstream interface (including HaLow)
+if ip link show eth0 2>/dev/null | grep -q "state UP"; then
+    UPSTREAM_IF="eth0"
+elif ip link show wlan0 2>/dev/null | grep -q "state UP"; then
+    UPSTREAM_IF="wlan0"
+elif ip link show "$HALOW_IF" 2>/dev/null | grep -q "state UP"; then
+    UPSTREAM_IF="$HALOW_IF"
+fi
+
 echo "Setting up captive portal mode (restrictive)..."
+echo "  Upstream Interface: $UPSTREAM_IF"
 
 # Flush all rules
 iptables -F

@@ -93,10 +93,51 @@ if [ -z "$USB_WLAN" ]; then
     USB_WLAN="wlan1"
 fi
 
+# Check for HaLow (802.11ah) adapter
+echo ""
+echo "Checking for HaLow (802.11ah) adapter..."
+HALOW_WLAN=""
+
+# Check if Newracom driver module is available
+if modinfo nrc &>/dev/null 2>&1; then
+    echo -e "  ${GREEN}Newracom HaLow driver (nrc) available${NC}"
+
+    # Look for HaLow interface by checking for nrc driver
+    for iface in /sys/class/net/wlan*; do
+        [ -e "$iface" ] || continue
+        ifname=$(basename "$iface")
+
+        # Skip already-identified interfaces
+        [ "$ifname" = "$BUILTIN_WLAN" ] && continue
+        [ "$ifname" = "$USB_WLAN" ] && continue
+
+        # Check if this interface uses the nrc driver
+        if [ -e "$iface/device/driver" ]; then
+            driver=$(basename $(readlink -f "$iface/device/driver" 2>/dev/null) 2>/dev/null)
+            if [ "$driver" = "nrc" ] || [ "$driver" = "nrc7292" ]; then
+                HALOW_WLAN="$ifname"
+                echo -e "  ${GREEN}Found HaLow interface: $ifname (driver: $driver)${NC}"
+            fi
+        fi
+    done
+
+    # If no interface found yet but driver is available, it may load as wlan2
+    if [ -z "$HALOW_WLAN" ]; then
+        echo -e "  ${YELLOW}HaLow driver available but no interface detected${NC}"
+        echo "  HaLow interface will likely be wlan2 when module is loaded"
+        HALOW_WLAN="wlan2"
+    fi
+else
+    echo -e "  ${YELLOW}No HaLow driver detected (optional)${NC}"
+fi
+
 echo ""
 echo "Configuration will use:"
 echo "  - AP Interface (USB): $USB_WLAN"
 echo "  - Upstream Interface: ${BUILTIN_WLAN:-eth0/wlan0}"
+if [ -n "$HALOW_WLAN" ]; then
+    echo "  - HaLow Interface: $HALOW_WLAN (manual backhaul option)"
+fi
 
 # Step 5: Check AP mode support
 echo ""
@@ -167,6 +208,18 @@ AP_INTERFACE=$USB_WLAN
 VPN_INTERFACE=$VPN_INTERFACE
 VPN_MODE=auto
 UPSTREAM_INTERFACES="eth0 wlan0"
+
+# HaLow (802.11ah) Configuration - Manual backhaul only
+# HaLow is never auto-selected; use 'vpn-ap-switch halow' to connect
+# Set HALOW_ENABLED=1 and configure below to use HaLow as backhaul
+HALOW_ENABLED=0
+HALOW_INTERFACE="${HALOW_WLAN:-wlan2}"
+HALOW_CONNECTION_METHOD=wpa_supplicant    # wpa_supplicant or nrc_start_py
+HALOW_SSID=""                              # Your HaLow AP SSID
+HALOW_PASSWORD=""                          # HaLow network password
+HALOW_SECURITY=sae                         # open, wpa2, or sae (WPA3)
+HALOW_COUNTRY=US                           # Regulatory domain: US, EU, JP, KR, etc.
+NRC_PKG_PATH=/home/pi/nrc_pkg              # Newracom SDK path (if using nrc_start_py)
 
 # Watchdog timing settings
 CHECK_INTERVAL=30
