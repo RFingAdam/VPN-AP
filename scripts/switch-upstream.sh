@@ -26,18 +26,27 @@ fi
 
 # HaLow (802.11ah) configuration
 HALOW_ENABLED="${HALOW_ENABLED:-0}"
-HALOW_INTERFACE="${HALOW_INTERFACE:-wlan2}"
-HALOW_CONNECTION_METHOD="${HALOW_CONNECTION_METHOD:-wpa_supplicant}"
+HALOW_INTERFACE="${HALOW_INTERFACE:-wlan0}"
+HALOW_CONNECTION_METHOD="${HALOW_CONNECTION_METHOD:-silex}"
 HALOW_SSID="${HALOW_SSID:-}"
 HALOW_PASSWORD="${HALOW_PASSWORD:-}"
 HALOW_SECURITY="${HALOW_SECURITY:-sae}"
 HALOW_COUNTRY="${HALOW_COUNTRY:-US}"
+# Silex SX-SDMAH / Morse Micro paths
+SILEX_PATH="${SILEX_PATH:-/home/pi/sx-sdmah}"
+SILEX_WPA_SUPPLICANT="${SILEX_WPA_SUPPLICANT:-/usr/local/sbin/wpa_supplicant_11ah}"
+# Newracom paths (alternative HaLow vendor)
 NRC_PKG_PATH="${NRC_PKG_PATH:-/home/pi/nrc_pkg}"
 
 # Check if HaLow hardware is available
 halow_available() {
     [ "$HALOW_ENABLED" != "1" ] && return 1
     ip link show "$HALOW_INTERFACE" &>/dev/null && return 0
+    # Check for Silex/Morse Micro driver
+    lsmod | grep -q "morse" && return 0
+    [ -d "$SILEX_PATH" ] && return 0
+    [ -x "$SILEX_WPA_SUPPLICANT" ] && return 0
+    # Check for Newracom driver
     lsmod | grep -q "nrc" && return 0
     modinfo nrc &>/dev/null 2>&1 && return 0
     return 1
@@ -322,6 +331,64 @@ connect_halow_nrc_start_py() {
     fi
 }
 
+# Connect using Silex SX-SDMAH / Morse Micro tools
+connect_halow_silex() {
+    echo "Connecting via Silex/Morse Micro tools..."
+
+    # Check for Silex SDK
+    if [ ! -d "$SILEX_PATH" ]; then
+        echo -e "${RED}Silex SDK not found at $SILEX_PATH${NC}"
+        echo "Expected: ~/sx-sdmah from Silex EVK image"
+        exit 1
+    fi
+
+    # Load the Silex/Morse driver if not already loaded
+    if ! ip link show "$HALOW_INTERFACE" &>/dev/null; then
+        echo "Loading Silex HaLow driver..."
+        if [ -x "$SILEX_PATH/load_driver.sh" ]; then
+            cd "$SILEX_PATH"
+            sudo ./load_driver.sh
+            sleep 3
+        else
+            echo -e "${RED}Driver loader not found: $SILEX_PATH/load_driver.sh${NC}"
+            exit 1
+        fi
+    fi
+
+    # Verify interface appeared
+    if ! ip link show "$HALOW_INTERFACE" &>/dev/null; then
+        echo -e "${RED}HaLow interface $HALOW_INTERFACE did not appear after loading driver${NC}"
+        echo "Check dmesg for errors: dmesg | tail -30"
+        exit 1
+    fi
+
+    # Bring up interface
+    ip link set "$HALOW_INTERFACE" up
+    sleep 1
+
+    # Generate wpa_supplicant config for Silex
+    local wpa_conf="/tmp/halow_silex_wpa.conf"
+    generate_halow_wpa_conf "$wpa_conf"
+
+    # Kill any existing wpa_supplicant on this interface
+    pkill -f "wpa_supplicant.*$HALOW_INTERFACE" 2>/dev/null || true
+    sleep 1
+
+    # Use Silex's modified wpa_supplicant if available, otherwise standard
+    local wpa_bin="wpa_supplicant"
+    if [ -x "$SILEX_WPA_SUPPLICANT" ]; then
+        wpa_bin="$SILEX_WPA_SUPPLICANT"
+        echo "Using Silex wpa_supplicant: $wpa_bin"
+    fi
+
+    # Start wpa_supplicant (Silex uses nl80211 driver)
+    $wpa_bin -B -i "$HALOW_INTERFACE" -D nl80211 -c "$wpa_conf"
+    sleep 5
+
+    # Request DHCP
+    dhclient "$HALOW_INTERFACE" 2>/dev/null || dhcpcd "$HALOW_INTERFACE" 2>/dev/null || true
+}
+
 use_halow() {
     echo -e "${GREEN}Switching to HaLow (802.11ah) upstream...${NC}"
 
@@ -341,14 +408,18 @@ use_halow() {
 
     # Connect using configured method
     case "$HALOW_CONNECTION_METHOD" in
+        silex|morse)
+            connect_halow_silex
+            ;;
         wpa_supplicant)
             connect_halow_wpa_supplicant
             ;;
-        nrc_start_py)
+        nrc_start_py|newracom)
             connect_halow_nrc_start_py
             ;;
         *)
             echo -e "${RED}Unknown HaLow connection method: $HALOW_CONNECTION_METHOD${NC}"
+            echo "Valid options: silex, wpa_supplicant, nrc_start_py"
             exit 1
             ;;
     esac
