@@ -2,6 +2,50 @@
 
 All notable changes to VPN-AP will be documented in this file.
 
+## [1.3.0] - 2026-01-19
+
+### Added
+
+#### HaLow (802.11ah) Backhaul Support
+- **Long-range sub-GHz backhaul option** for remote deployments
+  - Supports Newracom-based HaLow modules (e.g., Murata)
+  - Operates on ~900 MHz for greater range than standard WiFi
+  - Manual-only switching (not auto-selected during failover)
+
+- **New switch-upstream.sh commands**:
+  - `halow` - Connect to HaLow network as upstream backhaul
+  - `halow-disconnect` - Disconnect from HaLow network
+  - Status display now shows HaLow connection state when enabled
+
+- **Dual connection methods**:
+  - `wpa_supplicant` - Standard Linux wireless (default)
+  - `nrc_start_py` - Newracom SDK for advanced features
+
+- **HaLow configuration options** in `/etc/default/vpn-ap`:
+  - `HALOW_ENABLED` - Enable/disable HaLow support
+  - `HALOW_INTERFACE` - HaLow interface name (default: wlan2)
+  - `HALOW_CONNECTION_METHOD` - wpa_supplicant or nrc_start_py
+  - `HALOW_SSID` / `HALOW_PASSWORD` - Network credentials
+  - `HALOW_SECURITY` - open, wpa2, or sae (WPA3)
+  - `HALOW_COUNTRY` - Regulatory domain (US, EU, JP, etc.)
+  - `NRC_PKG_PATH` - Path to Newracom SDK
+
+- **Setup script enhancements**:
+  - Auto-detects Newracom HaLow driver (nrc module)
+  - Identifies HaLow interface during installation
+  - Adds HaLow configuration template to defaults file
+
+### Changed
+- **Firewall scripts** now detect HaLow as upstream interface
+  - `iptables-vpn-mode.sh` - HaLow upstream detection
+  - `iptables-internet-mode.sh` - HaLow upstream detection
+  - `iptables-captive-mode.sh` - HaLow upstream detection
+
+### Design Notes
+- HaLow intentionally excluded from `UPSTREAM_INTERFACES` auto-failover
+- Requires explicit `vpn-ap-switch halow` command to activate
+- Prevents unintended switching due to different latency/throughput characteristics
+
 ## [1.2.0] - 2026-01-11
 
 ### Added
