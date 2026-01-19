@@ -9,11 +9,18 @@ UPSTREAM_IF="${UPSTREAM_IF:-wlan0}"
 AP_SUBNET="192.168.4.0/24"
 AP_IP="192.168.4.1"
 
-# Auto-detect upstream interface
+# Source HaLow config if available
+[ -f /etc/default/vpn-ap ] && . /etc/default/vpn-ap
+HALOW_IF="${HALOW_INTERFACE:-wlan2}"
+
+# Auto-detect upstream interface (including HaLow)
 if ip link show eth0 2>/dev/null | grep -q "state UP"; then
     UPSTREAM_IF="eth0"
 elif ip link show wlan0 2>/dev/null | grep -q "state UP"; then
     UPSTREAM_IF="wlan0"
+elif ip link show "$HALOW_IF" 2>/dev/null | grep -q "state UP"; then
+    UPSTREAM_IF="$HALOW_IF"
+    echo "  Note: Using HaLow ($HALOW_IF) as upstream"
 fi
 
 echo "Setting up internet mode (no VPN protection)..."
