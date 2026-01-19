@@ -37,6 +37,7 @@
 - **Kill Switch** - If VPN disconnects, all client internet traffic stops (no leaks)
 - **Hotel WiFi Support** - Easy captive portal bypass for hotel/airport networks
 - **Dual Upstream Backhaul** - Ethernet preferred when available, WiFi fallback
+- **HaLow (802.11ah) Support** - Optional long-range sub-GHz backhaul for remote deployments
 
 ### Reliability Features (v1.2.0+)
 - **Automatic Watchdog** - Monitors services every minute, auto-recovers failures
@@ -58,8 +59,9 @@
 - USB WiFi adapter that supports AP mode (for the access point)
 - Power supply
 - MicroSD card (8GB+)
+- *(Optional)* HaLow (802.11ah) module for long-range backhaul (e.g., Murata/Newracom, Morse Micro)
 
-The built-in WiFi (`wlan0`) connects to upstream networks (hotel WiFi), while the USB adapter (`wlan1`) hosts the access point.
+The built-in WiFi (`wlan0`) connects to upstream networks (hotel WiFi), while the USB adapter (`wlan1`) hosts the access point. For long-range deployments, a HaLow module can provide sub-GHz backhaul connectivity.
 
 ## Quick Start
 
@@ -154,6 +156,53 @@ The firewall allows DHCP/VPN on both `eth0` and `wlan0` so it can fail over safe
 To customize which upstream interfaces are allowed, set:
 - `UPSTREAM_INTERFACES="eth0 wlan0"` in `/etc/default/vpn-ap`
 
+### HaLow (802.11ah) Backhaul
+
+VPN-AP supports HaLow (802.11ah) as an optional long-range backhaul for deployments where standard WiFi range is insufficient. HaLow operates on sub-GHz frequencies (~900 MHz) providing much greater range than 2.4/5 GHz WiFi.
+
+**Requirements:**
+- HaLow module (e.g., Murata with Newracom chipset, Morse Micro)
+- Second Raspberry Pi with HaLow module running as AP at the internet-connected location
+
+**Note:** HaLow is **manual-only** - it won't auto-select during failover. This is intentional because:
+- HaLow has different latency/throughput characteristics than standard WiFi
+- Sub-GHz frequencies have different regulatory requirements
+- Driver loading may require explicit country code configuration
+
+**Configuration** (in `/etc/default/vpn-ap`):
+
+```bash
+# Enable HaLow support
+HALOW_ENABLED=1
+HALOW_INTERFACE=wlan2              # HaLow interface name
+HALOW_CONNECTION_METHOD=wpa_supplicant  # or nrc_start_py for Newracom SDK
+HALOW_SSID="your-halow-ap"         # HaLow AP SSID
+HALOW_PASSWORD="your-password"     # Network password
+HALOW_SECURITY=sae                 # open, wpa2, or sae (WPA3)
+HALOW_COUNTRY=US                   # Regulatory domain
+NRC_PKG_PATH=/home/pi/nrc_pkg      # Newracom SDK path (if using nrc_start_py)
+```
+
+**Usage:**
+
+```bash
+# Check status (shows HaLow if enabled)
+sudo vpn-ap-switch status
+
+# Connect to HaLow backhaul
+sudo vpn-ap-switch halow
+
+# Disconnect from HaLow
+sudo vpn-ap-switch halow-disconnect
+```
+
+**Typical HaLow Bridge Setup:**
+
+```
+[Internet] <--Ethernet--> [Pi #1 + HaLow AP] <~~HaLow 900MHz~~> [Pi #2 + HaLow STA] <--WiFi AP--> [Your Devices]
+                                                 (long range)         (VPN-AP)
+```
+
 ### Watchdog tuning
 
 The watchdog runs every minute to keep the AP and VPN healthy.
@@ -232,12 +281,12 @@ Power On
 ### Network Architecture
 
 ```
-[Your Devices] --> [TravelRouter AP (wlan1)] --> [Pi] --> [NordVPN] --> [Hotel WiFi (wlan0)] --> Internet
-     ^                     ^                       ^            ^
-     |                     |                       |            |
-   192.168.4.x        192.168.4.1             Watchdog     Kill Switch:
-                                              monitors     Traffic ONLY
-                                              & recovers   through VPN
+[Your Devices] --> [TravelRouter AP (wlan1)] --> [Pi] --> [NordVPN] --> [Upstream] --> Internet
+     ^                     ^                       ^            ^            ^
+     |                     |                       |            |            |
+   192.168.4.x        192.168.4.1             Watchdog     Kill Switch   eth0 (Ethernet)
+                                              monitors     Traffic ONLY   wlan0 (Hotel WiFi)
+                                              & recovers   through VPN    HaLow (Long-range)
 ```
 
 ### Automatic Recovery
@@ -402,7 +451,7 @@ VPN-AP/
 │   ├── start-vpn.sh              # Start VPN with routing
 │   ├── captive-portal.sh         # CLI captive portal bypass
 │   ├── captive-portal-server.py  # Web configuration portal (robust version)
-│   ├── switch-upstream.sh        # Switch between eth0/wlan0
+│   ├── switch-upstream.sh        # Switch between eth0/wlan0/HaLow backhaul
 │   ├── iptables-captive-mode.sh  # Restrictive firewall for portal mode
 │   ├── iptables-internet-mode.sh # Forwarding without VPN
 │   ├── iptables-vpn-mode.sh      # Kill switch firewall for VPN mode
