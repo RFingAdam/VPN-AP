@@ -97,19 +97,10 @@ fi
 echo ""
 echo "Checking for HaLow (802.11ah) adapter..."
 HALOW_WLAN=""
-HALOW_VENDOR=""
 
-# Check for Silex SX-SDMAH / Morse Micro
-if [ -d "/home/pi/sx-sdmah" ] || [ -x "/usr/local/sbin/wpa_supplicant_11ah" ]; then
-    echo -e "  ${GREEN}Silex/Morse Micro HaLow SDK detected${NC}"
-    HALOW_VENDOR="silex"
-    # Silex typically uses wlan0 for HaLow
-    HALOW_WLAN="wlan0"
-    echo -e "  ${GREEN}HaLow interface: wlan0 (Silex SX-SDMAH)${NC}"
 # Check if Newracom driver module is available
-elif modinfo nrc &>/dev/null 2>&1; then
+if modinfo nrc &>/dev/null 2>&1; then
     echo -e "  ${GREEN}Newracom HaLow driver (nrc) available${NC}"
-    HALOW_VENDOR="newracom"
 
     # Look for HaLow interface by checking for nrc driver
     for iface in /sys/class/net/wlan*; do
@@ -222,16 +213,12 @@ UPSTREAM_INTERFACES="eth0 wlan0"
 # HaLow is never auto-selected; use 'vpn-ap-switch halow' to connect
 # Set HALOW_ENABLED=1 and configure below to use HaLow as backhaul
 HALOW_ENABLED=0
-HALOW_INTERFACE="${HALOW_WLAN:-wlan0}"
-HALOW_CONNECTION_METHOD=${HALOW_VENDOR:-silex}  # silex, wpa_supplicant, or nrc_start_py
+HALOW_INTERFACE="${HALOW_WLAN:-wlan2}"
+HALOW_CONNECTION_METHOD=wpa_supplicant    # wpa_supplicant or nrc_start_py
 HALOW_SSID=""                              # Your HaLow AP SSID
 HALOW_PASSWORD=""                          # HaLow network password
 HALOW_SECURITY=sae                         # open, wpa2, or sae (WPA3)
 HALOW_COUNTRY=US                           # Regulatory domain: US, EU, JP, KR, etc.
-# Silex SX-SDMAH / Morse Micro paths
-SILEX_PATH=/home/pi/sx-sdmah               # Silex SDK path
-SILEX_WPA_SUPPLICANT=/usr/local/sbin/wpa_supplicant_11ah
-# Newracom paths (alternative vendor)
 NRC_PKG_PATH=/home/pi/nrc_pkg              # Newracom SDK path (if using nrc_start_py)
 
 # Watchdog timing settings
