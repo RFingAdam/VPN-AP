@@ -160,12 +160,8 @@ To customize which upstream interfaces are allowed, set:
 
 VPN-AP supports HaLow (802.11ah) as an optional long-range backhaul for deployments where standard WiFi range is insufficient. HaLow operates on sub-GHz frequencies (~900 MHz) providing much greater range than 2.4/5 GHz WiFi.
 
-**Supported HaLow Modules:**
-- **Silex SX-SDMAH** (Morse Micro MM6108 chipset) - recommended
-- **Newracom NRC7292** based modules (e.g., Murata)
-
 **Requirements:**
-- HaLow module with Raspberry Pi HAT
+- HaLow module (e.g., Murata with Newracom chipset, Morse Micro)
 - Second Raspberry Pi with HaLow module running as AP at the internet-connected location
 
 **Note:** HaLow is **manual-only** - it won't auto-select during failover. This is intentional because:
@@ -178,19 +174,13 @@ VPN-AP supports HaLow (802.11ah) as an optional long-range backhaul for deployme
 ```bash
 # Enable HaLow support
 HALOW_ENABLED=1
-HALOW_INTERFACE=wlan0              # HaLow interface name (wlan0 for Silex)
-HALOW_CONNECTION_METHOD=silex      # silex, wpa_supplicant, or nrc_start_py
+HALOW_INTERFACE=wlan2              # HaLow interface name
+HALOW_CONNECTION_METHOD=wpa_supplicant  # or nrc_start_py for Newracom SDK
 HALOW_SSID="your-halow-ap"         # HaLow AP SSID
 HALOW_PASSWORD="your-password"     # Network password
 HALOW_SECURITY=sae                 # open, wpa2, or sae (WPA3)
 HALOW_COUNTRY=US                   # Regulatory domain
-
-# Silex SX-SDMAH paths (default)
-SILEX_PATH=/home/pi/sx-sdmah
-SILEX_WPA_SUPPLICANT=/usr/local/sbin/wpa_supplicant_11ah
-
-# Newracom paths (alternative)
-NRC_PKG_PATH=/home/pi/nrc_pkg
+NRC_PKG_PATH=/home/pi/nrc_pkg      # Newracom SDK path (if using nrc_start_py)
 ```
 
 **Usage:**
