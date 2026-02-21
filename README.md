@@ -47,11 +47,23 @@
 - **Health Monitoring** - Background thread detects and fixes connection drops
 - **Emergency Recovery** - Web-based and CLI recovery options
 
+### Robustness Features (v1.4.0+)
+- **VPN Health Monitoring** - Verifies VPN tunnel passes traffic, not just interface up
+- **VPN Auto-Recovery** - Watchdog detects and reconnects dropped VPN connections
+- **WiFi Auto-Recovery** - Watchdog reconnects to last known WiFi on disconnect
+- **Atomic Firewall Transitions** - Uses `iptables-restore` for zero-gap rule loading
+- **Exponential Backoff** - Recovery attempts use progressive delays (60s to 16min) to prevent storms
+- **Escalation Limits** - Full AP recovery capped at 3 attempts/day to prevent infinite loops
+- **Timeout Protection** - All systemctl/iptables calls wrapped with timeouts to prevent hangs
+- **Hotel Login Auto-Detection** - Portal automatically detects when hotel login completes
+- **Friendly Error Messages** - WiFi errors translated from cryptic nmcli output to plain English
+
 ### Safety Features
 - **SSH Always Accessible** - Port 22 open on ALL interfaces in all firewall modes
 - **Portal Always Available** - Web interface at 192.168.4.1 always reachable
 - **Graceful Degradation** - If VPN fails, internet still works (with warning)
 - **Firewall Failsafes** - Management access rules inserted at top of iptables chains
+- **systemd Restart Limits** - Services stop restarting after repeated failures to prevent resource exhaustion
 
 ## Hardware Requirements
 
@@ -298,9 +310,10 @@ The system includes multiple layers of automatic recovery:
 | **WiFi Connection** | 3 retry attempts with different strategies (normal → rescan → interface reset) |
 | **VPN Connection** | Tries 6 different servers, 3 attempts each |
 | **Services (hostapd, dnsmasq, portal)** | Watchdog checks every minute, auto-restarts if down |
-| **WiFi Drops** | Health thread detects and reconnects to last known network |
-| **VPN Drops** | Health thread detects and reconnects to last server |
-| **Firewall Rules** | Management access rules re-added after every firewall change |
+| **WiFi Drops** | Watchdog detects and reconnects to last known network with exponential backoff |
+| **VPN Drops** | Watchdog detects via health check (tunnel ping) and reconnects with backoff |
+| **Firewall Rules** | Management access rules re-added after every firewall change (dedup-safe) |
+| **Firewall Transitions** | Atomic iptables-restore prevents traffic gaps during mode switches |
 
 ### Kill Switch
 
@@ -480,6 +493,9 @@ The system maintains state for recovery in `/var/lib/vpn-ap/`:
 | `portal-state.json` | Last WiFi SSID/password, last VPN server |
 | `last_watchdog_check` | Timestamp of last successful watchdog run |
 | `*_recovery_count` | Tracks recovery attempts to prevent loops |
+| `*_last_recovery` | Timestamps for exponential backoff between recovery attempts |
+| `escalation_count` | Tracks full AP recovery escalation attempts (max 3/day) |
+| `vpn_should_be_active` | Signal file: VPN was intentionally connected (watchdog monitors this) |
 | `last_reset` | Date of last daily counter reset |
 
 ## Security Notes
@@ -496,10 +512,15 @@ The system maintains state for recovery in `/var/lib/vpn-ap/`:
 | Scenario | Behavior |
 |----------|----------|
 | WiFi connection fails | Retries 3x with different strategies, restores portal mode |
+| WiFi drops mid-session | Watchdog reconnects with exponential backoff (60s-16min) |
 | VPN connection fails | Tries 6 servers, falls back to internet-only mode with warning |
-| Service crashes | Watchdog restarts within 1 minute |
+| VPN drops mid-session | Watchdog detects via tunnel health check, auto-reconnects |
+| Service crashes | Watchdog restarts within 1 minute (with backoff) |
 | Power loss / reboot | State restored, auto-reconnects to last WiFi/VPN |
-| Firewall misconfiguration | Management access rules always re-added |
+| Firewall mode switch | Atomic iptables-restore, no traffic gap |
+| Firewall misconfiguration | Management access rules always re-added (dedup-safe) |
+| Recovery loop | Escalation capped at 3/day, services capped at 5 attempts |
+| Watchdog hangs | systemd TimeoutStartSec=120 kills and retries |
 | Complete lockout | Emergency recovery via SSH or web portal |
 
 ## License
