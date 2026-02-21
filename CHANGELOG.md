@@ -2,6 +2,69 @@
 
 All notable changes to VPN-AP will be documented in this file.
 
+## [1.4.0] - 2026-02-21
+
+### Fixed
+
+#### Critical Reliability Fixes
+- **Watchdog now recovers VPN failures** - Previously the watchdog only monitored AP services; VPN drops went undetected and unrecovered
+- **Fixed infinite escalation loop** - Escalation counter was reset unconditionally, allowing infinite recovery loops. Now capped at 3 escalations/day and per-service counters only reset on successful escalation
+- **Eliminated VPN recovery race condition** - Two independent systems (watchdog + portal health thread) could simultaneously try to reconnect WiFi/VPN, causing conflicts. Recovery is now consolidated into the watchdog only
+- **Fixed DNS redirect race condition** - Firewall rules are now set up BEFORE removing DNS redirect during WiFi transitions (was reversed, causing brief traffic gaps)
+- **Fixed management access rule duplication** - `ensure_management_access()` in both watchdog and portal now uses delete-before-insert pattern to prevent iptables rule accumulation
+
+#### Firewall Safety
+- **Atomic firewall transitions** - All three iptables scripts (`vpn-mode`, `internet-mode`, `captive-mode`) now use `iptables-restore` for atomic rule loading, eliminating the traffic gap between flush and rule creation where all traffic was dropped
+
+### Added
+
+#### VPN Health Monitoring
+- **VPN health check** (`check_vpn_health()`) - Verifies VPN tunnel is actually passing traffic via ping, not just that the interface exists
+- **VPN auto-recovery** (`recover_vpn()`) - Disconnects and reconnects VPN when health check fails, with retry limits
+- **VPN signal file** (`vpn_should_be_active`) - Portal creates this on VPN connect, removes on disconnect. Watchdog uses it to know when VPN recovery is needed
+
+#### WiFi Auto-Recovery
+- **WiFi reconnect in watchdog** - Detects WiFi drops and reconnects to last known network using saved state
+
+#### Exponential Backoff
+- **Recovery backoff** - All recovery functions now apply exponential backoff (60s, 120s, 240s, 480s, 960s) between attempts to prevent rapid-fire recovery storms
+
+#### Improved Health Checks
+- **DNS resolution verification** - `check_dnsmasq()` now verifies DNS actually resolves (every 5th cycle) instead of just checking if the process is running
+- **Upstream connectivity verification** - `check_upstream()` now pings 2 out of 3 DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9) instead of just checking interface state
+- **Internet check reliability** - `get_status()` now uses 2-out-of-3 pings instead of a single ping to reduce false negatives
+
+#### Captive Portal UX
+- **Auto-detect hotel login completion** - Hotel portal page polls `/api/status` every 5 seconds and automatically shows success message with VPN button when internet is detected
+- **User-friendly WiFi error messages** - Translates cryptic nmcli errors (e.g., "secrets were required" -> "Incorrect WiFi password. Please try again.")
+- **Prominent captive portal banner** - When WiFi is connected but internet is unavailable, a large banner with direct hotel login link appears on the home page
+
+#### Improved Log Rotation
+- **3-file rotation** - Watchdog log now keeps 3 history files (`.old`, `.1`, `.2`) instead of 1, providing ~4MB of debug history
+
+### Changed
+
+#### systemd Service Hardening
+- **captive-portal.service** - Added `StartLimitIntervalSec=300`, `StartLimitBurst=5` (stops after 5 crashes in 5 min), `TimeoutStopSec=10`
+- **vpn-ap-watchdog.service** - Added `TimeoutStartSec=120` as hard backstop
+- **vpn-ap.service** - Changed `StartLimitIntervalSec=0` (unlimited) to `StartLimitIntervalSec=600` with `StartLimitBurst=3`
+
+#### Timeout Protection
+- **Watchdog timeout wrappers** - All `systemctl` calls wrapped with 30s timeout (`sctl()`), all `iptables` calls wrapped with 10s timeout (`ipt()`), preventing the watchdog from hanging forever
+
+#### Health Thread Consolidation
+- **Portal health thread simplified** - No longer attempts WiFi/VPN reconnection (watchdog handles all recovery). Only monitors status and ensures management access
+
+### State Files
+
+New state files in `/var/lib/vpn-ap/`:
+
+| File | Purpose |
+|------|---------|
+| `vpn_should_be_active` | Signal file: VPN was intentionally connected |
+| `escalation_count` | Tracks full AP recovery escalation attempts |
+| `*_last_recovery` | Timestamps for exponential backoff |
+
 ## [1.3.0] - 2026-01-19
 
 ### Added

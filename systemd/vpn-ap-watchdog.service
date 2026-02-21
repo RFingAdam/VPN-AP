@@ -15,6 +15,7 @@ EnvironmentFile=-/etc/default/vpn-ap
 
 # Use PROJECT_DIR to locate script
 ExecStart=/bin/bash -c '${PROJECT_DIR:-/home/pi/VPN-AP}/scripts/watchdog.sh'
+TimeoutStartSec=120
 StandardOutput=null
 StandardError=journal
 
