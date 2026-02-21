@@ -159,17 +159,18 @@ def ensure_management_access():
     """CRITICAL: Ensure SSH and portal access is never blocked"""
     ap_if = os.environ.get('AP_IF', 'wlan1')
 
+    # Use delete-before-insert pattern to prevent rule duplication
     cmds = [
-        # Always allow SSH on all interfaces
-        "iptables -C INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 22 -j ACCEPT",
-        # Always allow portal HTTP on AP
-        f"iptables -C INPUT -i {ap_if} -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT 2 -i {ap_if} -p tcp --dport 80 -j ACCEPT",
-        # Always allow DHCP on AP
-        f"iptables -C INPUT -i {ap_if} -p udp --dport 67 -j ACCEPT 2>/dev/null || iptables -I INPUT 3 -i {ap_if} -p udp --dport 67 -j ACCEPT",
-        # Always allow DNS on AP
-        f"iptables -C INPUT -i {ap_if} -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I INPUT 4 -i {ap_if} -p udp --dport 53 -j ACCEPT",
         # Allow loopback
-        "iptables -C INPUT -i lo -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -i lo -j ACCEPT",
+        "iptables -D INPUT -i lo -j ACCEPT 2>/dev/null; iptables -I INPUT 1 -i lo -j ACCEPT",
+        # Always allow SSH on all interfaces
+        "iptables -D INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null; iptables -I INPUT 1 -p tcp --dport 22 -j ACCEPT",
+        # Always allow portal HTTP on AP
+        f"iptables -D INPUT -i {ap_if} -p tcp --dport 80 -j ACCEPT 2>/dev/null; iptables -I INPUT 2 -i {ap_if} -p tcp --dport 80 -j ACCEPT",
+        # Always allow DHCP on AP
+        f"iptables -D INPUT -i {ap_if} -p udp --dport 67 -j ACCEPT 2>/dev/null; iptables -I INPUT 3 -i {ap_if} -p udp --dport 67 -j ACCEPT",
+        # Always allow DNS on AP
+        f"iptables -D INPUT -i {ap_if} -p udp --dport 53 -j ACCEPT 2>/dev/null; iptables -I INPUT 4 -i {ap_if} -p udp --dport 53 -j ACCEPT",
     ]
 
     for cmd in cmds:
@@ -237,9 +238,13 @@ def get_status():
         ip_match = run_cmd("curl -s --max-time 3 https://api.ipify.org 2>/dev/null")
         status['vpn_ip'] = ip_match[0] if ip_match[1] == 0 else ''
 
-    # Check internet (quick ping test)
-    _, code = run_cmd("ping -c 1 -W 2 8.8.8.8 2>/dev/null")
-    status['internet'] = (code == 0)
+    # Check internet (2-out-of-3 pings for reliability)
+    ping_success = 0
+    for target in ['8.8.8.8', '1.1.1.1', '9.9.9.9']:
+        _, code = run_cmd(f"ping -c 1 -W 2 {target} 2>/dev/null")
+        if code == 0:
+            ping_success += 1
+    status['internet'] = (ping_success >= 2)
 
     # Determine current mode
     if status['vpn_connected']:
@@ -409,11 +414,11 @@ def connect_wifi_with_retry(ssid, password, max_retries=WIFI_MAX_RETRIES):
                 # Save successful connection info
                 save_state({'last_wifi_ssid': ssid, 'last_wifi_password': password})
 
-                # Enable internet mode
+                # Enable internet mode (firewall first, then DNS redirect removal)
                 log("Enabling internet mode firewall...")
-                remove_dns_redirect()
                 setup_internet_mode_firewall()
                 ensure_management_access()
+                remove_dns_redirect()
                 log("WiFi switch complete - internet mode active")
                 return True, "Connected successfully"
             else:
@@ -462,6 +467,13 @@ def connect_vpn_with_retry(max_retries=VPN_MAX_RETRIES):
                     # Save successful server
                     save_state({'last_vpn_server': server})
 
+                    # Signal watchdog that VPN should be active
+                    try:
+                        with open(os.path.join(STATE_DIR, 'vpn_should_be_active'), 'w') as f:
+                            f.write(str(int(time.time())))
+                    except Exception:
+                        pass
+
                     # Set up kill switch
                     if setup_vpn_mode_firewall():
                         ensure_management_access()
@@ -487,6 +499,12 @@ def disconnect_vpn():
     output, code = run_cmd("nordvpn disconnect", timeout=10)
     time.sleep(1)
 
+    # Remove VPN signal file so watchdog doesn't try to reconnect
+    try:
+        os.remove(os.path.join(STATE_DIR, 'vpn_should_be_active'))
+    except FileNotFoundError:
+        pass
+
     # Switch to internet mode (not captive, since WiFi should still work)
     setup_internet_mode_firewall()
     ensure_management_access()
@@ -501,6 +519,7 @@ def setup_dns_redirect():
         with open(dnsmasq_conf, 'w') as f:
             f.write(f"address=/#/{AP_IP}\n")
         subprocess.run(["systemctl", "restart", "dnsmasq"], check=False, timeout=10)
+        time.sleep(1)  # Wait for dnsmasq to stabilize
         log("DNS redirect enabled")
     except Exception as e:
         log(f"Warning: Could not configure DNS redirect: {e}")
@@ -513,6 +532,7 @@ def remove_dns_redirect():
         if os.path.exists(dnsmasq_conf):
             os.remove(dnsmasq_conf)
         subprocess.run(["systemctl", "restart", "dnsmasq"], check=False, timeout=10)
+        time.sleep(1)  # Wait for dnsmasq to stabilize
         log("DNS redirect removed")
     except Exception as e:
         log(f"Warning: Could not remove DNS redirect: {e}")
@@ -665,6 +685,24 @@ def reconnect_last_vpn():
     return False
 
 
+def translate_wifi_error(msg):
+    """Translate cryptic nmcli errors to user-friendly messages"""
+    msg_lower = msg.lower()
+    if 'secrets were required' in msg_lower:
+        return "Incorrect WiFi password. Please try again."
+    if 'no suitable device' in msg_lower:
+        return "WiFi adapter not found. Check hardware."
+    if 'connection activation failed' in msg_lower:
+        return "Could not connect. Password may be wrong or network out of range."
+    if 'timeout' in msg_lower:
+        return "Connection timed out. Network may be out of range."
+    if 'no network with ssid' in msg_lower:
+        return "Network not found. It may be out of range."
+    if 'not authorized' in msg_lower:
+        return "Not authorized to connect. Check your credentials."
+    return msg
+
+
 class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Suppress HTTP logging
@@ -809,6 +847,14 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
 
         content += '</div>'
 
+        # Prominent banner if captive portal login needed
+        if status['mode'] == 'captive_portal_needed':
+            content += '''<div class="message error" style="text-align: center;">
+                <p style="font-size: 18px; font-weight: 600; margin-bottom: 10px;">Hotel Login Required</p>
+                <p>WiFi connected but no internet. Complete the hotel/hotspot login to continue.</p>
+                <a href="/hotel-portal"><button style="margin-top: 15px;">Complete Hotel Login</button></a>
+            </div>'''
+
         # Warning if connected without VPN
         if status['wifi_connected'] and status['internet'] and not status['vpn_connected']:
             content += '''<div class="message warning">
@@ -821,9 +867,9 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
         # WiFi button
         content += '<a href="/scan"><button>Select WiFi Network</button></a>'
 
-        # Show hotel portal button if WiFi connected but no internet
+        # Show hotel portal button if WiFi connected but no internet (secondary, since banner is above)
         if status['wifi_connected'] and not status['internet']:
-            content += '<a href="/hotel-portal"><button class="secondary">Complete Hotel Login</button></a>'
+            content += '<a href="/hotel-portal"><button class="secondary">Hotel Login Page</button></a>'
 
         # VPN controls - show if WiFi is connected
         if status['wifi_connected']:
@@ -903,7 +949,8 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
                 content += '<div class="message success">Internet available!</div>'
                 content += '<a href="/vpn/connect"><button>Enable VPN</button></a>'
         else:
-            content += f'<div class="message error">Failed: {html.escape(msg)}</div>'
+            friendly_msg = translate_wifi_error(msg)
+            content += f'<div class="message error">{html.escape(friendly_msg)}</div>'
             content += '<a href="/scan"><button class="secondary">Try Again</button></a>'
 
         content += '<a href="/"><button class="secondary">Home</button></a>'
@@ -913,16 +960,50 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
     def show_hotel_portal(self):
         content = '<h1>Hotel Login</h1>'
         content += '<div class="card">'
-        content += '''<div class="message info">
+        content += '''<div class="message info" id="instructions">
             <p>To complete hotel WiFi login:</p>
             <ol style="margin-left: 20px; margin-top: 10px;">
                 <li>Open a new browser tab</li>
                 <li>Go to: <a href="http://neverssl.com" target="_blank">neverssl.com</a></li>
                 <li>Complete the hotel login/accept terms</li>
-                <li>Return here</li>
+                <li>Return here (or wait for auto-detection)</li>
             </ol>
+        </div>
+        <div id="auto-status" style="text-align: center; margin-bottom: 15px;">
+            <div class="spinner" style="margin: 0 auto;"></div>
+            <p class="retry-info" style="margin-top: 8px;">Checking for internet access...</p>
+        </div>
+        <div id="success-msg" class="message success" style="display: none; text-align: center;">
+            <p style="font-size: 18px; font-weight: 600;">Internet Connected!</p>
+            <p>Hotel login completed successfully. You can now enable VPN.</p>
         </div>'''
-        content += '<a href="/"><button>Done</button></a>'
+        content += '<a href="/" id="done-btn"><button>Done</button></a>'
+        content += '<a href="/vpn/connect" id="vpn-btn" style="display: none;"><button>Enable VPN</button></a>'
+        content += '''
+        <script>
+        (function() {
+            var checking = true;
+            function checkInternet() {
+                if (!checking) return;
+                fetch('/api/status')
+                    .then(r => r.json())
+                    .then(status => {
+                        if (status.internet) {
+                            checking = false;
+                            document.getElementById('auto-status').style.display = 'none';
+                            document.getElementById('instructions').style.display = 'none';
+                            document.getElementById('success-msg').style.display = 'block';
+                            document.getElementById('done-btn').style.display = 'none';
+                            document.getElementById('vpn-btn').style.display = 'block';
+                        } else {
+                            setTimeout(checkInternet, 5000);
+                        }
+                    })
+                    .catch(() => setTimeout(checkInternet, 5000));
+            }
+            setTimeout(checkInternet, 3000);
+        })();
+        </script>'''
         content += '</div>'
         self.send_html(content)
 
@@ -1077,7 +1158,8 @@ def signal_handler(signum, frame):
 
 
 def health_check_thread():
-    """Background thread that monitors health and recovers from issues"""
+    """Background thread that monitors health and ensures management access.
+    WiFi and VPN recovery is handled by the watchdog service to avoid conflicts."""
     while True:
         try:
             time.sleep(60)  # Check every minute
@@ -1085,20 +1167,14 @@ def health_check_thread():
             # Ensure management access is always available
             ensure_management_access()
 
-            # Check if we're in a broken state
+            # Log status for monitoring (no recovery actions - watchdog handles that)
             status = get_status()
-
-            # If WiFi was connected but now isn't, try to reconnect
-            state = load_state()
-            if not status['wifi_connected'] and state.get('last_wifi_ssid'):
-                log("WiFi disconnected, attempting to reconnect...")
-                reconnect_last_wifi()
-
-            # If VPN was connected but now isn't (and WiFi is still up), try to reconnect
-            if status['wifi_connected'] and status['internet'] and not status['vpn_connected']:
-                if state.get('last_vpn_server'):
-                    log("VPN disconnected, attempting to reconnect...")
-                    reconnect_last_vpn()
+            if not status['wifi_connected']:
+                state = load_state()
+                if state.get('last_wifi_ssid'):
+                    log("Health check: WiFi disconnected (watchdog will handle recovery)")
+            if not status['vpn_connected'] and os.path.exists(os.path.join(STATE_DIR, 'vpn_should_be_active')):
+                log("Health check: VPN disconnected (watchdog will handle recovery)")
 
         except Exception as e:
             log(f"Health check error: {e}")
