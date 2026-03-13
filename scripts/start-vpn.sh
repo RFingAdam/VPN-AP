@@ -278,65 +278,28 @@ sysctl -w net.ipv4.ip_forward=1 > /dev/null
 if [[ "$VPN_METHOD" == "nordvpn" ]]; then
     # NordVPN manages its own firewall, we just add forwarding rules
     # Clear any existing AP-related rules
-    iptables -t nat -D POSTROUTING -s $AP_SUBNET -o $VPN_INTERFACE -j MASQUERADE 2>/dev/null || true
+    iptables -t nat -D POSTROUTING -s "$AP_SUBNET" -o "$VPN_INTERFACE" -j MASQUERADE 2>/dev/null || true
 
     # Add NAT for AP clients
-    iptables -t nat -A POSTROUTING -s $AP_SUBNET -o $VPN_INTERFACE -j MASQUERADE
+    iptables -t nat -A POSTROUTING -s "$AP_SUBNET" -o "$VPN_INTERFACE" -j MASQUERADE
 
     # Allow forwarding between AP and VPN
-    iptables -I FORWARD 1 -i $AP_INTERFACE -o $VPN_INTERFACE -j ACCEPT
-    iptables -I FORWARD 2 -i $VPN_INTERFACE -o $AP_INTERFACE -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -I FORWARD 1 -i "$AP_INTERFACE" -o "$VPN_INTERFACE" -j ACCEPT
+    iptables -I FORWARD 2 -i "$VPN_INTERFACE" -o "$AP_INTERFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 else
-    # WireGuard: Set up full iptables rules with kill switch
-    iptables -F
-    iptables -t nat -F
-    iptables -t mangle -F
-    iptables -X 2>/dev/null || true
+    # WireGuard: Use atomic iptables-restore via dedicated script (no traffic gap)
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export VPN_IF="$VPN_INTERFACE"
+    export AP_IF="$AP_INTERFACE"
 
-    # Default policies - DROP (kill switch)
-    iptables -P INPUT DROP
-    iptables -P FORWARD DROP
-    iptables -P OUTPUT DROP
-
-    # Allow loopback
-    iptables -A INPUT -i lo -j ACCEPT
-    iptables -A OUTPUT -o lo -j ACCEPT
-
-    # Allow established connections
-    iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-
-    # Allow SSH from AP clients and upstream (for management)
-    iptables -A INPUT -i $AP_INTERFACE -p tcp --dport 22 -j ACCEPT
-    for iface in $UPSTREAM_INTERFACES; do
-        if ip link show "$iface" >/dev/null 2>&1; then
-            iptables -A INPUT -i "$iface" -p tcp --dport 22 -j ACCEPT
-        fi
-    done
-
-    # Allow DHCP/DNS on AP interface
-    iptables -A INPUT -i $AP_INTERFACE -p udp --dport 67 -j ACCEPT
-    iptables -A INPUT -i $AP_INTERFACE -p udp --dport 53 -j ACCEPT
-    iptables -A INPUT -i $AP_INTERFACE -p tcp --dport 53 -j ACCEPT
-    iptables -A INPUT -i $AP_INTERFACE -p icmp --icmp-type echo-request -j ACCEPT
-
-    # Allow VPN tunnel + DHCP on upstream interfaces
-    VPN_PORT=$(resolve_vpn_port)
-    for iface in $UPSTREAM_INTERFACES; do
-        add_upstream_rules "$iface"
-    done
-
-    # Allow all through VPN
-    iptables -A OUTPUT -o $VPN_INTERFACE -j ACCEPT
-    iptables -A INPUT -i $VPN_INTERFACE -j ACCEPT
-
-    # Forward AP traffic through VPN
-    iptables -A FORWARD -i $AP_INTERFACE -o $VPN_INTERFACE -j ACCEPT
-    iptables -A FORWARD -i $VPN_INTERFACE -o $AP_INTERFACE -j ACCEPT
-
-    # NAT AP traffic through VPN
-    iptables -t nat -A POSTROUTING -s $AP_SUBNET -o $VPN_INTERFACE -j MASQUERADE
+    if [ -x /usr/local/bin/iptables-vpn-mode.sh ]; then
+        /usr/local/bin/iptables-vpn-mode.sh
+    elif [ -x "$SCRIPT_DIR/iptables-vpn-mode.sh" ]; then
+        "$SCRIPT_DIR/iptables-vpn-mode.sh"
+    else
+        echo -e "${RED}Error: iptables-vpn-mode.sh not found${NC}"
+        exit 1
+    fi
 fi
 
 echo ""

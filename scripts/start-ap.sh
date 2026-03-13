@@ -23,14 +23,14 @@ echo -e "${GREEN}Starting WiFi Access Point on $AP_INTERFACE...${NC}"
 rfkill unblock wifi 2>/dev/null || true
 
 # Bring up the interface
-ip link set $AP_INTERFACE up 2>/dev/null || true
+ip link set "$AP_INTERFACE" up 2>/dev/null || true
 
 # Disable power saving to reduce long-uptime disconnects
 iw dev "$AP_INTERFACE" set power_save off 2>/dev/null || true
 
 # Ensure static IP is set
-if ! ip addr show $AP_INTERFACE | grep -q "192.168.4.1"; then
-    ip addr add 192.168.4.1/24 dev $AP_INTERFACE 2>/dev/null || true
+if ! ip addr show "$AP_INTERFACE" | grep -q "192.168.4.1"; then
+    ip addr add 192.168.4.1/24 dev "$AP_INTERFACE" 2>/dev/null || true
 fi
 
 # Stop services first (in case they're running)
@@ -55,7 +55,7 @@ fi
 sleep 2
 
 # Ensure static IP is set after hostapd starts
-ip addr add 192.168.4.1/24 dev $AP_INTERFACE 2>/dev/null || true
+ip addr add 192.168.4.1/24 dev "$AP_INTERFACE" 2>/dev/null || true
 
 # Start dnsmasq (DHCP/DNS) - must start AFTER hostapd
 echo "Starting dnsmasq..."
