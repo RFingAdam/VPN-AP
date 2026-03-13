@@ -99,7 +99,7 @@ echo "Checking for HaLow (802.11ah) adapter..."
 HALOW_WLAN=""
 
 # Check if Newracom driver module is available
-if modinfo nrc &>/dev/null 2>&1; then
+if modinfo nrc &>/dev/null; then
     echo -e "  ${GREEN}Newracom HaLow driver (nrc) available${NC}"
 
     # Look for HaLow interface by checking for nrc driver
