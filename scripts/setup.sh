@@ -27,6 +27,14 @@ echo -e "${GREEN}VPN-AP Setup Script${NC}"
 echo -e "${GREEN}================================${NC}"
 echo ""
 
+# Pre-flight: Check for required base tools
+for cmd in ip iw rfkill systemctl sed grep awk; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo -e "${RED}Error: Required command '$cmd' not found. Install it before running setup.${NC}"
+        exit 1
+    fi
+done
+
 # Step 1: Update system
 echo -e "${YELLOW}[1/7] Updating system packages...${NC}"
 apt update
@@ -279,6 +287,7 @@ EOF
 # Create state directory for recovery
 mkdir -p /var/lib/vpn-ap
 chown root:root /var/lib/vpn-ap
+chmod 700 /var/lib/vpn-ap
 
 # Install systemd services
 cp "$PROJECT_DIR/systemd/vpn-ap.service" /etc/systemd/system/

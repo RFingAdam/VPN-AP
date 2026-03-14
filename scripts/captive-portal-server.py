@@ -23,6 +23,7 @@ import time
 import html
 import signal
 import sys
+import tempfile
 
 PORT = 80
 AP_IP = "192.168.4.1"
@@ -34,6 +35,12 @@ LOG_FILE = "/var/log/vpn-ap-portal.log"
 UPSTREAM_IF = os.environ.get('UPSTREAM_IF', 'wlan0')  # WiFi client interface (connects to hotel/home WiFi)
 AP_IF = os.environ.get('AP_IF', 'wlan1')              # AP interface (your devices connect here)
 
+# Rate limiting: max requests per IP per window
+RATE_LIMIT_WINDOW = 60   # seconds
+RATE_LIMIT_MAX = 30      # max requests per window per IP
+_rate_limit_store = {}   # {ip: [timestamps]}
+_rate_limit_lock = threading.Lock()
+
 # Retry configuration
 WIFI_MAX_RETRIES = 3
 WIFI_RETRY_DELAY = 5
@@ -41,8 +48,12 @@ VPN_MAX_RETRIES = 3
 VPN_RETRY_DELAY = 5
 VPN_SERVERS = ["", "us", "uk", "de", "nl", "ch"]  # Empty = auto, then specific countries
 
-# Ensure state directory exists
+# Ensure state directory exists with restrictive permissions
 os.makedirs(STATE_DIR, exist_ok=True)
+try:
+    os.chmod(STATE_DIR, 0o700)
+except OSError:
+    pass
 
 HTML_HEADER = """<!DOCTYPE html>
 <html lang="en">
@@ -136,12 +147,20 @@ def run_cmd(cmd, timeout=30):
 
 
 def save_state(state):
-    """Save state to disk for recovery"""
+    """Save state to disk atomically for recovery (survives power loss)"""
     try:
-        with open(STATE_FILE, 'w') as f:
+        fd, tmp_path = tempfile.mkstemp(dir=STATE_DIR, suffix='.tmp')
+        with os.fdopen(fd, 'w') as f:
             json.dump(state, f)
+        os.chmod(tmp_path, 0o600)
+        os.rename(tmp_path, STATE_FILE)
     except Exception as e:
         log(f"Failed to save state: {e}")
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 def load_state():
@@ -513,16 +532,22 @@ def disconnect_vpn():
 
 
 def setup_dns_redirect():
-    """Set up DNS to redirect all requests to captive portal"""
+    """Set up DNS to redirect all requests to captive portal (atomic write)"""
     dnsmasq_conf = "/etc/dnsmasq.d/captive-portal.conf"
     try:
-        with open(dnsmasq_conf, 'w') as f:
+        fd, tmp_path = tempfile.mkstemp(dir="/etc/dnsmasq.d", suffix='.tmp')
+        with os.fdopen(fd, 'w') as f:
             f.write(f"address=/#/{AP_IP}\n")
+        os.rename(tmp_path, dnsmasq_conf)
         subprocess.run(["systemctl", "restart", "dnsmasq"], check=False, timeout=10)
         time.sleep(1)  # Wait for dnsmasq to stabilize
         log("DNS redirect enabled")
     except Exception as e:
         log(f"Warning: Could not configure DNS redirect: {e}")
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 def remove_dns_redirect():
@@ -540,14 +565,14 @@ def remove_dns_redirect():
 
 def find_script(name):
     """Find script in known locations, respecting PROJECT_DIR env var"""
-    # Get PROJECT_DIR from environment (set by systemd or defaults)
-    project_dir = os.environ.get('PROJECT_DIR', '/home/pi/VPN-AP')
+    # Get PROJECT_DIR from environment (set by systemd EnvironmentFile)
+    project_dir = os.environ.get('PROJECT_DIR', '')
 
     paths = [
         f"/usr/local/bin/{name}",
-        f"{project_dir}/scripts/{name}",
-        f"/home/pi/VPN-AP/scripts/{name}",  # Fallback for backwards compatibility
     ]
+    if project_dir:
+        paths.append(f"{project_dir}/scripts/{name}")
     for p in paths:
         if os.path.exists(p):
             return p
@@ -707,6 +732,22 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Suppress HTTP logging
 
+    def is_rate_limited(self):
+        """Check if client IP has exceeded rate limit"""
+        client_ip = self.client_address[0]
+        now = time.time()
+        with _rate_limit_lock:
+            if client_ip not in _rate_limit_store:
+                _rate_limit_store[client_ip] = []
+            # Remove old timestamps outside the window
+            _rate_limit_store[client_ip] = [
+                t for t in _rate_limit_store[client_ip] if now - t < RATE_LIMIT_WINDOW
+            ]
+            if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_MAX:
+                return True
+            _rate_limit_store[client_ip].append(now)
+            return False
+
     def send_html(self, content, status=200):
         try:
             self.send_response(status)
@@ -735,6 +776,9 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
             log(f"Error redirecting: {e}")
 
     def do_GET(self):
+        if self.is_rate_limited():
+            self.send_error(429, "Too Many Requests")
+            return
         try:
             path = urllib.parse.urlparse(self.path).path
 
@@ -745,7 +789,12 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
                 self.redirect(f'http://{AP_IP}/')
                 return
 
-            if path == '/':
+            if path == '/health':
+                status = get_status()
+                healthy = status.get('ap_running', False)
+                self.send_json({"status": "ok" if healthy else "degraded"}, 200 if healthy else 503)
+                return
+            elif path == '/':
                 self.show_home()
             elif path == '/scan':
                 self.show_scan()
@@ -783,6 +832,9 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
             self.send_html(f'<h1>Error</h1><p>{html.escape(str(e))}</p><a href="/"><button>Home</button></a>', 500)
 
     def do_POST(self):
+        if self.is_rate_limited():
+            self.send_error(429, "Too Many Requests")
+            return
         try:
             path = urllib.parse.urlparse(self.path).path
             content_length = int(self.headers.get('Content-Length', 0))
@@ -908,6 +960,7 @@ class CaptivePortalHandler(http.server.BaseHTTPRequestHandler):
                 html += '</ul>';
                 html += '<input type="hidden" name="ssid" id="ssid">';
                 html += '<input type="password" name="password" placeholder="Password (if required)">';
+                html += '<div class="message warning" style="font-size:12px;margin-top:10px;">This portal uses HTTP. Your password is only sent over the local AP network (192.168.4.x), not the internet.</div>';
                 html += '<button type="submit">Connect</button>';
                 html += '</form>';
                 html += '<a href="/"><button class="secondary">Cancel</button></a>';
