@@ -4,6 +4,14 @@
 
 set -o pipefail
 
+# Prevent concurrent watchdog runs (timer could fire while previous still running)
+LOCKFILE="/var/run/vpn-ap-watchdog.lock"
+exec 200>"$LOCKFILE"
+if ! flock -n 200; then
+    echo "Watchdog already running, skipping this cycle"
+    exit 0
+fi
+
 LOGFILE="/var/log/vpn-ap-watchdog.log"
 STATE_DIR="/var/lib/vpn-ap"
 MAX_LOG_SIZE=1048576  # 1MB
@@ -12,8 +20,13 @@ VPN_INTERFACE="${VPN_INTERFACE:-wg0}"
 VPN_START_CMD="${VPN_START_CMD:-/usr/local/bin/vpn-start}"
 MAX_ESCALATIONS=3
 
-# Ensure state directory exists
+# Ensure state directory exists with restrictive permissions
 mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
+
+# Ensure log file has restrictive permissions (may contain SSIDs)
+touch "$LOGFILE" 2>/dev/null || true
+chmod 640 "$LOGFILE" 2>/dev/null || true
 
 # Timeout wrappers to prevent watchdog from hanging
 sctl() { timeout 30 systemctl "$@" 2>/dev/null; }
@@ -22,7 +35,9 @@ ipt() { timeout 10 iptables "$@" 2>/dev/null; }
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOGFILE"
     # Rotate log if too large (keep 3 history files)
-    if [ -f "$LOGFILE" ] && [ $(stat -f%z "$LOGFILE" 2>/dev/null || stat -c%s "$LOGFILE" 2>/dev/null) -gt $MAX_LOG_SIZE ]; then
+    local log_size
+    log_size=$(stat -f%z "$LOGFILE" 2>/dev/null || stat -c%s "$LOGFILE" 2>/dev/null || echo 0)
+    if [ -f "$LOGFILE" ] && [ "$log_size" -gt "$MAX_LOG_SIZE" ]; then
         [ -f "${LOGFILE}.1" ] && mv "${LOGFILE}.1" "${LOGFILE}.2"
         [ -f "${LOGFILE}.old" ] && mv "${LOGFILE}.old" "${LOGFILE}.1"
         mv "$LOGFILE" "${LOGFILE}.old"
@@ -297,7 +312,7 @@ recover_vpn() {
             local state_file="$STATE_DIR/portal-state.json"
             local server=""
             if [ -f "$state_file" ]; then
-                server=$(python3 -c "import json; print(json.load(open('$state_file')).get('last_vpn_server',''))" 2>/dev/null || true)
+                server=$(STATE_FILE="$state_file" python3 -c "import json,os; print(json.load(open(os.environ['STATE_FILE'])).get('last_vpn_server',''))" 2>/dev/null || true)
             fi
 
             local cmd="nordvpn connect"
@@ -334,7 +349,7 @@ recover_wifi() {
     local state_file="$STATE_DIR/portal-state.json"
     local ssid=""
     if [ -f "$state_file" ]; then
-        ssid=$(python3 -c "import json; print(json.load(open('$state_file')).get('last_wifi_ssid',''))" 2>/dev/null || true)
+        ssid=$(STATE_FILE="$state_file" python3 -c "import json,os; print(json.load(open(os.environ['STATE_FILE'])).get('last_wifi_ssid',''))" 2>/dev/null || true)
     fi
 
     if [ -z "$ssid" ]; then
@@ -679,7 +694,7 @@ main() {
     if [ "$wifi_up" -eq 0 ]; then
         local state_file="$STATE_DIR/portal-state.json"
         if [ -f "$state_file" ]; then
-            local has_ssid=$(python3 -c "import json; s=json.load(open('$state_file')); print('yes' if s.get('last_wifi_ssid') else 'no')" 2>/dev/null || echo "no")
+            local has_ssid=$(STATE_FILE="$state_file" python3 -c "import json,os; s=json.load(open(os.environ['STATE_FILE'])); print('yes' if s.get('last_wifi_ssid') else 'no')" 2>/dev/null || echo "no")
             if [ "$has_ssid" = "yes" ]; then
                 log "WARN: WiFi disconnected but saved SSID exists, attempting recovery..."
                 recover_wifi

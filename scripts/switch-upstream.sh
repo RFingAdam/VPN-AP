@@ -311,7 +311,7 @@ connect_halow_nrc_start_py() {
     esac
 
     # Run start.py for STA mode
-    cd "$NRC_PKG_PATH/script"
+    cd "$NRC_PKG_PATH/script" || { echo -e "${RED}Error: Cannot access $NRC_PKG_PATH/script${NC}"; exit 1; }
     python3 ./start.py 0 "$sec_param" "$HALOW_COUNTRY"
 
     sleep 3
