@@ -4,6 +4,14 @@
 
 set -o pipefail
 
+# Prevent concurrent watchdog runs (timer could fire while previous still running)
+LOCKFILE="/var/run/vpn-ap-watchdog.lock"
+exec 200>"$LOCKFILE"
+if ! flock -n 200; then
+    echo "Watchdog already running, skipping this cycle"
+    exit 0
+fi
+
 LOGFILE="/var/log/vpn-ap-watchdog.log"
 STATE_DIR="/var/lib/vpn-ap"
 MAX_LOG_SIZE=1048576  # 1MB
@@ -12,8 +20,13 @@ VPN_INTERFACE="${VPN_INTERFACE:-wg0}"
 VPN_START_CMD="${VPN_START_CMD:-/usr/local/bin/vpn-start}"
 MAX_ESCALATIONS=3
 
-# Ensure state directory exists
+# Ensure state directory exists with restrictive permissions
 mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
+
+# Ensure log file has restrictive permissions (may contain SSIDs)
+touch "$LOGFILE" 2>/dev/null || true
+chmod 640 "$LOGFILE" 2>/dev/null || true
 
 # Timeout wrappers to prevent watchdog from hanging
 sctl() { timeout 30 systemctl "$@" 2>/dev/null; }

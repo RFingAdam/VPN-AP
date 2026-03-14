@@ -9,14 +9,21 @@ Type=simple
 # Load configuration including PROJECT_DIR
 EnvironmentFile=-/etc/default/vpn-ap
 
-# Use PROJECT_DIR to locate script (defaults to /home/pi/VPN-AP if not set)
-ExecStart=/bin/bash -c '/usr/bin/python3 ${PROJECT_DIR:-/home/pi/VPN-AP}/scripts/captive-portal-server.py'
+# PROJECT_DIR is set by /etc/default/vpn-ap (created during setup)
+ExecStart=/bin/bash -c '/usr/bin/python3 ${PROJECT_DIR:?PROJECT_DIR not set - run setup.sh}/scripts/captive-portal-server.py'
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=300
 StartLimitBurst=5
 TimeoutStopSec=10
 User=root
+
+# Hardening: restrict what root can do even if the portal is compromised
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/vpn-ap /var/log /etc/dnsmasq.d /run
+NoNewPrivileges=no
+PrivateTmp=true
 
 # Environment
 Environment=PYTHONUNBUFFERED=1

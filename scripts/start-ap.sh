@@ -14,6 +14,14 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Pre-flight dependency check
+for cmd in ip iw rfkill systemctl hostapd; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo -e "${RED}Error: Required command '$cmd' not found. Run setup.sh first.${NC}"
+        exit 1
+    fi
+done
+
 # Configuration
 AP_INTERFACE="${AP_INTERFACE:-wlan1}"
 
