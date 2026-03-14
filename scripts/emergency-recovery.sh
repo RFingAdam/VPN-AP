@@ -39,9 +39,9 @@ restart_ap_services() {
     # Bring up AP interface
     AP_IF="${AP_IF:-wlan1}"
     rfkill unblock wifi 2>/dev/null || true
-    ip link set $AP_IF up 2>/dev/null || true
-    ip addr flush dev $AP_IF 2>/dev/null || true
-    ip addr add 192.168.4.1/24 dev $AP_IF 2>/dev/null || true
+    ip link set "$AP_IF" up 2>/dev/null || true
+    ip addr flush dev "$AP_IF" 2>/dev/null || true
+    ip addr add 192.168.4.1/24 dev "$AP_IF" 2>/dev/null || true
 
     sleep 2
 
