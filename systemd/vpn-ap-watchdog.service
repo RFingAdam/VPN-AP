@@ -8,13 +8,12 @@ Type=oneshot
 # Default values (overridden by EnvironmentFile)
 Environment=VPN_INTERFACE=wg0
 Environment=UPSTREAM_INTERFACES="eth0 wlan0"
-Environment=PROJECT_DIR=/home/pi/VPN-AP
 
 # Load configuration including PROJECT_DIR
 EnvironmentFile=-/etc/default/vpn-ap
 
-# Use PROJECT_DIR to locate script
-ExecStart=/bin/bash -c '${PROJECT_DIR:-/home/pi/VPN-AP}/scripts/watchdog.sh'
+# Use installed script path (setup.sh copies to /usr/local/bin/)
+ExecStart=/usr/local/bin/vpn-ap-watchdog
 TimeoutStartSec=120
 StandardOutput=null
 StandardError=journal

@@ -15,6 +15,14 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Pre-flight dependency check
+for cmd in ip iptables sysctl; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo -e "${RED}Error: Required command '$cmd' not found. Run setup.sh first.${NC}"
+        exit 1
+    fi
+done
+
 # Configuration
 VPN_MODE="${VPN_MODE:-auto}"
 VPN_INTERFACE="${VPN_INTERFACE:-}"
@@ -237,6 +245,15 @@ else
     if grep -q "YOUR_NORDVPN_PRIVATE_KEY_HERE" "/etc/wireguard/${VPN_INTERFACE}.conf"; then
         echo -e "${RED}Error: WireGuard config still has placeholder values!${NC}"
         exit 1
+    fi
+
+    # Warn if WireGuard config has loose permissions (contains private keys)
+    local wg_perms
+    wg_perms=$(stat -c%a "/etc/wireguard/${VPN_INTERFACE}.conf" 2>/dev/null || stat -f%Lp "/etc/wireguard/${VPN_INTERFACE}.conf" 2>/dev/null)
+    if [ -n "$wg_perms" ] && [ "$wg_perms" != "600" ] && [ "$wg_perms" != "400" ]; then
+        echo -e "${YELLOW}Warning: /etc/wireguard/${VPN_INTERFACE}.conf has permissions $wg_perms (should be 600)${NC}"
+        echo -e "${YELLOW}Fixing permissions...${NC}"
+        chmod 600 "/etc/wireguard/${VPN_INTERFACE}.conf"
     fi
 
     # Stop VPN if running
