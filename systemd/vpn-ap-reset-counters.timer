@@ -1,0 +1,10 @@
+[Unit]
+Description=VPN-AP daily counter reset timer
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+AccuracySec=1h
+
+[Install]
+WantedBy=timers.target

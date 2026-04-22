@@ -34,12 +34,16 @@ if [ ! -x "$VPN_START_CMD" ]; then
     VPN_START_CMD="$(dirname "$0")/start-vpn.sh"
 fi
 
-# Detect upstream
-if ip link show eth0 2>/dev/null | grep -q "state UP"; then
-    UPSTREAM="eth0"
-else
-    UPSTREAM="wlan0"
-fi
+# Source shared upstream helper
+[ -f /etc/default/vpn-ap ] && . /etc/default/vpn-ap
+_VPN_AP_LIB="${VPN_AP_LIB:-/usr/local/lib/vpn-ap}"
+[ -r "$_VPN_AP_LIB/upstream.sh" ] || _VPN_AP_LIB="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/lib"
+# shellcheck source=lib/upstream.sh
+. "$_VPN_AP_LIB/upstream.sh"
+
+# Detect upstream (priority from UPSTREAM_INTERFACES; sensible fallback if nothing's up)
+UPSTREAM="$(select_upstream 2>/dev/null || true)"
+[ -z "$UPSTREAM" ] && UPSTREAM="wlan0"
 
 enable_captive_portal_access() {
     echo -e "${YELLOW}================================${NC}"

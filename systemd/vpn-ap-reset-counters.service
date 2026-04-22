@@ -1,0 +1,6 @@
+[Unit]
+Description=VPN-AP reset watchdog recovery counters (daily)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'rm -f /var/lib/vpn-ap/*_recovery_count'

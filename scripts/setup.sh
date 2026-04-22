@@ -43,13 +43,21 @@ apt install -y \
     iptables-persistent \
     iw \
     rfkill \
-    net-tools
+    net-tools \
+    jq \
+    usbmuxd \
+    libimobiledevice-utils
 
 # Step 3: Stop services during configuration
 echo -e "${YELLOW}[3/7] Stopping services for configuration...${NC}"
 systemctl stop hostapd 2>/dev/null || true
 systemctl stop dnsmasq 2>/dev/null || true
 systemctl unmask hostapd
+
+# Disable the standalone wpa_supplicant.service on Pi OS Trixie — it grabs
+# wlan0 exclusively and prevents NetworkManager from managing WiFi. VPN-AP
+# uses nmcli for upstream WiFi, so NM must own wlan0.
+systemctl disable --now wpa_supplicant 2>/dev/null || true
 
 # Step 4: Detect WiFi interfaces
 echo -e "${YELLOW}[4/7] Detecting WiFi interfaces...${NC}"
@@ -207,7 +215,11 @@ PROJECT_DIR=$PROJECT_DIR
 AP_INTERFACE=$USB_WLAN
 VPN_INTERFACE=$VPN_INTERFACE
 VPN_MODE=auto
-UPSTREAM_INTERFACES="eth0 wlan0"
+# Upstream (WAN) candidates in priority order; first usable wins.
+# iphone0 first: the common trip pattern plugs an iPhone USB tether in and
+# leaves eth0 for management. If you don't use iPhone tether this is harmless
+# (select_upstream skips interfaces that don't exist).
+UPSTREAM_INTERFACES="iphone0 eth0 wlan0"
 
 # HaLow (802.11ah) Configuration - Manual backhaul only
 # HaLow is never auto-selected; use 'vpn-ap-switch halow' to connect
@@ -237,6 +249,19 @@ if [ ! -f "/etc/wireguard/${VPN_INTERFACE}.conf" ]; then
     echo "You need to create /etc/wireguard/${VPN_INTERFACE}.conf with your NordVPN credentials"
 fi
 
+# Install the shared upstream helper to a stable location so copied scripts
+# can source it from /usr/local/lib/vpn-ap.
+mkdir -p /usr/local/lib/vpn-ap
+cp "$SCRIPT_DIR/lib/upstream.sh" /usr/local/lib/vpn-ap/upstream.sh
+chmod 644 /usr/local/lib/vpn-ap/upstream.sh
+
+# Install the udev rule template used by setup-iphone-tether.sh so it works
+# from its installed location at /usr/local/bin as well as from the dev tree.
+mkdir -p /usr/local/lib/vpn-ap/udev-templates
+cp "$PROJECT_DIR/config/udev/70-iphone-tether.rules.template" \
+    /usr/local/lib/vpn-ap/udev-templates/70-iphone-tether.rules.template
+chmod 644 /usr/local/lib/vpn-ap/udev-templates/70-iphone-tether.rules.template
+
 # Copy scripts to /usr/local/bin
 cp "$SCRIPT_DIR/start-ap.sh" /usr/local/bin/vpn-ap-start
 cp "$SCRIPT_DIR/start-vpn.sh" /usr/local/bin/vpn-start
@@ -245,6 +270,7 @@ cp "$SCRIPT_DIR/switch-upstream.sh" /usr/local/bin/vpn-ap-switch
 cp "$SCRIPT_DIR/captive-portal.sh" /usr/local/bin/captive-portal
 cp "$SCRIPT_DIR/emergency-recovery.sh" /usr/local/bin/vpn-ap-emergency
 cp "$SCRIPT_DIR/watchdog.sh" /usr/local/bin/vpn-ap-watchdog
+cp "$SCRIPT_DIR/setup-iphone-tether.sh" /usr/local/bin/setup-iphone-tether
 cp "$SCRIPT_DIR/iptables-captive-mode.sh" /usr/local/bin/
 cp "$SCRIPT_DIR/iptables-internet-mode.sh" /usr/local/bin/
 cp "$SCRIPT_DIR/iptables-vpn-mode.sh" /usr/local/bin/
@@ -252,6 +278,7 @@ chmod +x /usr/local/bin/vpn-ap-*
 chmod +x /usr/local/bin/vpn-start
 chmod +x /usr/local/bin/vpn-stop
 chmod +x /usr/local/bin/captive-portal
+chmod +x /usr/local/bin/setup-iphone-tether
 chmod +x /usr/local/bin/iptables-*.sh
 
 # Add restart policies for core services
@@ -285,11 +312,15 @@ cp "$PROJECT_DIR/systemd/vpn-ap.service" /etc/systemd/system/
 cp "$PROJECT_DIR/systemd/captive-portal.service" /etc/systemd/system/
 cp "$PROJECT_DIR/systemd/vpn-ap-watchdog.service" /etc/systemd/system/
 cp "$PROJECT_DIR/systemd/vpn-ap-watchdog.timer" /etc/systemd/system/
+cp "$PROJECT_DIR/systemd/vpn-ap-reset-counters.service" /etc/systemd/system/
+cp "$PROJECT_DIR/systemd/vpn-ap-reset-counters.timer" /etc/systemd/system/
 systemctl daemon-reload
 
-# Enable watchdog timer for auto-recovery
+# Enable watchdog timer for auto-recovery and the daily counter reset
 systemctl enable vpn-ap-watchdog.timer
 systemctl start vpn-ap-watchdog.timer
+systemctl enable vpn-ap-reset-counters.timer
+systemctl start vpn-ap-reset-counters.timer
 
 echo ""
 echo -e "${GREEN}================================${NC}"

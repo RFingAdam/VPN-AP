@@ -27,7 +27,13 @@ VPN_ENDPOINT_PORT="${VPN_ENDPOINT_PORT:-}"
 VPN_FORCE_RECONNECT="${VPN_FORCE_RECONNECT:-0}"
 AP_INTERFACE="${AP_INTERFACE:-wlan1}"
 AP_SUBNET="192.168.4.0/24"
-UPSTREAM_INTERFACES="${UPSTREAM_INTERFACES:-eth0 wlan0}"
+UPSTREAM_INTERFACES="${UPSTREAM_INTERFACES:-iphone0 eth0 wlan0}"
+
+# Source shared upstream helper (select_upstream / upstream_iface_ready / ...)
+_VPN_AP_LIB="${VPN_AP_LIB:-/usr/local/lib/vpn-ap}"
+[ -r "$_VPN_AP_LIB/upstream.sh" ] || _VPN_AP_LIB="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/lib"
+# shellcheck source=lib/upstream.sh
+. "$_VPN_AP_LIB/upstream.sh"
 
 # Parse arguments
 if [[ "$1" == "--wireguard" ]]; then
@@ -76,37 +82,6 @@ resolve_vpn_port() {
     fi
 
     echo "$port"
-}
-
-get_default_route_interface() {
-    ip route show default 0.0.0.0/0 2>/dev/null | awk '{
-        for (i = 1; i <= NF; i++) {
-            if ($i == "dev") {
-                print $(i + 1)
-                exit
-            }
-        }
-    }'
-}
-
-get_best_upstream() {
-    local iface
-    iface="$(get_default_route_interface)"
-    if [ -n "$iface" ]; then
-        echo "$iface"
-        return 0
-    fi
-
-    for iface in $UPSTREAM_INTERFACES; do
-        if ip link show "$iface" >/dev/null 2>&1; then
-            if ip link show "$iface" | grep -q "state UP"; then
-                echo "$iface"
-                return 0
-            fi
-        fi
-    done
-
-    return 1
 }
 
 add_upstream_rules() {
@@ -158,15 +133,14 @@ if [ "$VPN_METHOD" = "nordvpn" ] && [ "$VPN_INTERFACE_DEFAULTED" -eq 1 ]; then
 fi
 
 # Detect upstream interface (for status/logging)
-UPSTREAM_INTERFACE="$(get_best_upstream || true)"
+UPSTREAM_INTERFACE="$(select_upstream 2>/dev/null || true)"
 if [ -n "$UPSTREAM_INTERFACE" ]; then
-    if [ "$UPSTREAM_INTERFACE" = "eth0" ]; then
-        echo "Using Ethernet (eth0) as upstream"
-    elif [ "$UPSTREAM_INTERFACE" = "wlan0" ]; then
-        echo "Using WiFi (wlan0) as upstream"
-    else
-        echo "Using $UPSTREAM_INTERFACE as upstream"
-    fi
+    case "$UPSTREAM_INTERFACE" in
+        eth0)     echo "Using Ethernet (eth0) as upstream" ;;
+        wlan0)    echo "Using WiFi (wlan0) as upstream" ;;
+        iphone0)  echo "Using iPhone USB tether (iphone0) as upstream" ;;
+        *)        echo "Using $UPSTREAM_INTERFACE as upstream" ;;
+    esac
 else
     echo -e "${YELLOW}Warning: No upstream interface detected as UP${NC}"
     echo "Allowing DHCP/VPN on: $UPSTREAM_INTERFACES"

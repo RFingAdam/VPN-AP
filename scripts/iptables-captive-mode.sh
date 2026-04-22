@@ -13,14 +13,23 @@ AP_SUBNET="192.168.4.0/24"
 [ -f /etc/default/vpn-ap ] && . /etc/default/vpn-ap
 HALOW_IF="${HALOW_INTERFACE:-wlan2}"
 
-# Auto-detect upstream interface (including HaLow)
-if ip link show eth0 2>/dev/null | grep -q "state UP"; then
-    UPSTREAM_IF="eth0"
-elif ip link show wlan0 2>/dev/null | grep -q "state UP"; then
-    UPSTREAM_IF="wlan0"
-elif ip link show "$HALOW_IF" 2>/dev/null | grep -q "state UP"; then
-    UPSTREAM_IF="$HALOW_IF"
+# Source shared upstream helper (select_upstream / upstream_iface_ready / ...)
+_VPN_AP_LIB="${VPN_AP_LIB:-/usr/local/lib/vpn-ap}"
+[ -r "$_VPN_AP_LIB/upstream.sh" ] || _VPN_AP_LIB="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/lib"
+# shellcheck source=lib/upstream.sh
+. "$_VPN_AP_LIB/upstream.sh"
+
+# Extend candidates with HaLow only when explicitly enabled (preserves legacy fallback)
+if [ "${HALOW_ENABLED:-0}" = "1" ] && [ -n "$HALOW_IF" ]; then
+    case " $UPSTREAM_INTERFACES " in
+        *" $HALOW_IF "*) ;;
+        *) UPSTREAM_INTERFACES="$UPSTREAM_INTERFACES $HALOW_IF" ;;
+    esac
 fi
+
+# Auto-detect upstream interface
+DETECTED_UPSTREAM="$(select_upstream 2>/dev/null || true)"
+[ -n "$DETECTED_UPSTREAM" ] && UPSTREAM_IF="$DETECTED_UPSTREAM"
 
 echo "Setting up captive portal mode (restrictive)..."
 echo "  Upstream Interface: $UPSTREAM_IF"

@@ -36,7 +36,8 @@
 - **NordVPN Integration** - Uses NordVPN CLI with NordLynx (WireGuard) protocol
 - **Kill Switch** - If VPN disconnects, all client internet traffic stops (no leaks)
 - **Hotel WiFi Support** - Easy captive portal bypass for hotel/airport networks
-- **Dual Upstream Backhaul** - Ethernet preferred when available, WiFi fallback
+- **Flexible Upstream Backhaul** - `UPSTREAM_INTERFACES` priority list (default `iphone0 eth0 wlan0`); gateway-reachability probe ensures a working candidate wins over a link-up-but-dead one
+- **iPhone USB Tether Backhaul** - Personal Hotspot over USB appears as `iphone0` and is a first-class upstream (see [iPhone tether setup](#iphone-usb-tether-as-backhaul))
 - **HaLow (802.11ah) Support** - Optional long-range sub-GHz backhaul for remote deployments
 
 ### Reliability Features (v1.2.0+)
@@ -47,13 +48,14 @@
 - **Health Monitoring** - Background thread detects and fixes connection drops
 - **Emergency Recovery** - Web-based and CLI recovery options
 
-### Robustness Features (v1.4.0+)
+### Robustness Features (v1.4.0+, simplified in v1.5.0)
 - **VPN Health Monitoring** - Verifies VPN tunnel passes traffic, not just interface up
 - **VPN Auto-Recovery** - Watchdog detects and reconnects dropped VPN connections
 - **WiFi Auto-Recovery** - Watchdog reconnects to last known WiFi on disconnect
 - **Atomic Firewall Transitions** - Uses `iptables-restore` for zero-gap rule loading
-- **Exponential Backoff** - Recovery attempts use progressive delays (60s to 16min) to prevent storms
-- **Escalation Limits** - Full AP recovery capped at 3 attempts/day to prevent infinite loops
+- **MSS Clamping** - `--clamp-mss-to-pmtu` on the FORWARD chain avoids PMTUD black-holes on cellular/LTE backhauls
+- **Per-Service Recovery Cap** - Each service is capped at 5 recovery attempts/day; daily reset is driven by a systemd `OnCalendar=daily` timer (persistent across reboots)
+- **Escalation Path** - If hostapd normal recovery fails 3 times, the wireless subsystem is reloaded end-to-end
 - **Timeout Protection** - All systemctl/iptables calls wrapped with timeouts to prevent hangs
 - **Hotel Login Auto-Detection** - Portal automatically detects when hotel login completes
 - **Friendly Error Messages** - WiFi errors translated from cryptic nmcli output to plain English
@@ -163,10 +165,56 @@ If your VPN uses a non-standard WireGuard port, set `VPN_ENDPOINT_PORT=XXXXX` in
 ### Backhaul selection
 
 By default the watchdog will restart the VPN if the default route changes (for example, when you plug in Ethernet).
-The firewall allows DHCP/VPN on both `eth0` and `wlan0` so it can fail over safely.
+The firewall allows DHCP/VPN on each upstream candidate so failover is seamless.
 
-To customize which upstream interfaces are allowed, set:
-- `UPSTREAM_INTERFACES="eth0 wlan0"` in `/etc/default/vpn-ap`
+Upstream candidates are driven by a single env var in `/etc/default/vpn-ap`:
+
+```bash
+# Priority order; first usable wins. Default in v1.5.0+:
+UPSTREAM_INTERFACES="iphone0 eth0 wlan0"
+```
+
+The selection in `scripts/lib/upstream.sh` is three-tier:
+1. Interface is up with IPv4 **and** its gateway pings (real uplink).
+2. Interface is up with IPv4 and has a gateway configured (plausible uplink).
+3. Interface is up with IPv4 (best-guess fallback).
+
+This is what lets a management-only `eth0` (link up, no internet) lose to a working `iphone0` — which is typically what you want on the road.
+
+### iPhone USB Tether as Backhaul
+
+Using an iPhone Personal Hotspot over USB as the LTE uplink is a first-class path in v1.5.0+. The benefits vs. WiFi hotspot: wired stability, iPhone charges while tethering, no radio interference with the Pi's AP.
+
+**One-time pairing (at home):**
+
+```bash
+sudo setup-iphone-tether
+```
+
+This script:
+- installs `usbmuxd`, `libimobiledevice-utils`, `libimobiledevice6`
+- enables the `usbmuxd` service (required for iOS 17+)
+- captures the iPhone's tether MAC
+- writes `/etc/udev/rules.d/70-iphone-tether.rules` so the interface gets a stable name: `iphone0`
+
+**On the trip:**
+
+```bash
+# Plug in the iPhone via a data-capable USB cable, unlock it, tap Trust (first time only).
+# Turn ON Personal Hotspot in iPhone Settings.
+# Done — the Pi's watchdog will see iphone0 come up and route everything through it.
+
+# Status / manual switch:
+sudo vpn-ap-switch status
+sudo vpn-ap-switch iphone
+```
+
+**Known quirks (worth knowing before you leave):**
+
+- iOS silently enters **USB Restricted Mode** after ~1 hour of screen lock; the tether stops routing until the phone is unlocked. Practical fixes: set *Settings → Display & Brightness → Auto-Lock: Never* while in use, or just unlock the phone periodically.
+- iPhone DHCP hands out `172.20.10.x/28`. Only 14 usable client addresses; plenty for a Pi, but not a full conference room.
+- Cellular MTU often triggers PMTUD black-holes on large transfers. v1.5.0 adds MSS clamping on the FORWARD chain in VPN and internet modes to fix this automatically. For WireGuard specifically, `config/wg0.conf.template` has a commented `MTU = 1280` — uncomment it only if you see partial-page symptoms.
+- An active VPN tunnel keeps the hotspot from going idle; iOS's 5-minute idle-disable only kicks in when no device is using the hotspot. No keepalive daemon needed.
 
 ### HaLow (802.11ah) Backhaul
 

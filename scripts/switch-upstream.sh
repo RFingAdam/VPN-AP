@@ -24,6 +24,12 @@ fi
 # Source defaults for HaLow configuration
 [ -f /etc/default/vpn-ap ] && . /etc/default/vpn-ap
 
+# Source shared upstream helper (exposes select_upstream / upstream_iface_ready)
+_VPN_AP_LIB="${VPN_AP_LIB:-/usr/local/lib/vpn-ap}"
+[ -r "$_VPN_AP_LIB/upstream.sh" ] || _VPN_AP_LIB="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/lib"
+# shellcheck source=lib/upstream.sh
+. "$_VPN_AP_LIB/upstream.sh"
+
 # HaLow (802.11ah) configuration
 HALOW_ENABLED="${HALOW_ENABLED:-0}"
 HALOW_INTERFACE="${HALOW_INTERFACE:-wlan2}"
@@ -393,6 +399,33 @@ use_halow() {
     fi
 }
 
+use_iphone() {
+    echo -e "${GREEN}Switching to iPhone USB tether upstream...${NC}"
+
+    if ! upstream_iface_ready iphone0; then
+        echo -e "${RED}iphone0 is not ready.${NC}"
+        echo "Plug the iPhone in via USB, unlock it, and tap Trust if prompted."
+        echo "If this is the first time, run: sudo setup-iphone-tether"
+        exit 1
+    fi
+
+    if ! upstream_iface_gateway_reachable iphone0; then
+        echo -e "${YELLOW}Warning: gateway not reachable on iphone0.${NC}"
+        echo "Is Personal Hotspot enabled on the iPhone?"
+    fi
+
+    local gw ip
+    gw="$(upstream_iface_gateway iphone0)"
+    ip="$(ip -4 addr show iphone0 2>/dev/null | awk '/inet /{print $2; exit}')"
+    echo "  IP: ${ip:-unknown}  Gateway: ${gw:-unknown}"
+
+    # Restart VPN to use the new route
+    echo "Restarting VPN..."
+    VPN_FORCE_RECONNECT=1 "$VPN_START_CMD"
+
+    show_status
+}
+
 disconnect_halow() {
     echo "Disconnecting HaLow..."
 
@@ -414,6 +447,9 @@ case "${1:-status}" in
     wifi|wlan)
         use_wifi
         ;;
+    iphone|tether|usb)
+        use_iphone
+        ;;
     halow|802.11ah)
         use_halow
         ;;
@@ -422,10 +458,11 @@ case "${1:-status}" in
         ;;
     status|*)
         show_status
-        echo "Usage: $0 [ethernet|wifi|halow|halow-disconnect|status]"
+        echo "Usage: $0 [ethernet|wifi|iphone|halow|halow-disconnect|status]"
         echo ""
         echo "  ethernet         - Switch to Ethernet (eth0) upstream"
         echo "  wifi             - Switch to WiFi (wlan0) upstream"
+        echo "  iphone           - Switch to iPhone USB tether (iphone0) upstream"
         echo "  halow            - Switch to HaLow 802.11ah ($HALOW_INTERFACE) upstream"
         echo "  halow-disconnect - Disconnect from HaLow network"
         echo "  status           - Show current network status"
