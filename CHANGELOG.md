@@ -2,6 +2,44 @@
 
 All notable changes to VPN-AP will be documented in this file.
 
+## [1.5.0] - 2026-04-22
+
+### Added
+
+#### iPhone USB Tether as Backhaul
+- **First-class iPhone Personal Hotspot support over USB.** `ipheth` driver is surfaced as `iphone0` via a udev rule; the rest of the stack treats it like any other upstream.
+- **`scripts/setup-iphone-tether.sh`** - one-shot pairing helper: installs `usbmuxd`/`libimobiledevice-utils`, enables usbmuxd, captures the iPhone's tether MAC, and writes `/etc/udev/rules.d/70-iphone-tether.rules` for a stable `iphone0` name.
+- **`scripts/switch-upstream.sh iphone`** - new manual-switch target for the iPhone tether (on par with `ethernet`, `wifi`, `halow`).
+- **MSS clamping (`--clamp-mss-to-pmtu`)** added to the FORWARD chain in VPN and internet iptables modes. Prevents PMTUD black-holes common on cellular uplinks; benefits all backhauls, not just iPhone.
+- **WireGuard template (`config/wg0.conf.template`)** now includes a commented `MTU = 1280` with guidance on when to enable it for cellular backhauls.
+
+### Changed
+
+#### Upstream selection consolidated (`scripts/lib/upstream.sh`)
+- Six duplicated copies of the `ip link show <iface> | grep "state UP"` pattern (in `start-vpn.sh`, `switch-upstream.sh` x4, `captive-portal.sh`, and the three `iptables-*-mode.sh` scripts) are now replaced by a single `select_upstream` helper. Priority is driven by `UPSTREAM_INTERFACES`; three-tier selection (gateway-reachable → has-gateway → ready) lets a mgmt-only eth0 lose to a working iPhone tether.
+- **Default `UPSTREAM_INTERFACES` is now `"iphone0 eth0 wlan0"`** (was `"eth0 wlan0"`). Existing installs with a populated `/etc/default/vpn-ap` are **not** modified.
+
+#### Watchdog simplification (`scripts/watchdog.sh`)
+- **Removed `should_attempt_recovery` and its per-service timestamp files.** The function had inconsistent call ordering across recovery paths (gate-then-increment vs. increment-then-gate) and its in-band side effect (writing a timestamp) made it non-idempotent. Rate-limiting is now the count cap (5/day/service) plus systemd `StartLimitBurst` on the managed units — the real fire suppressants.
+- **Removed the separate `escalation_count` state.** The hostapd daily count cap is now the single gate; escalation fires when hostapd recovery hits `ESCALATE_AT_COUNT` (3) without succeeding.
+- **`set -u`** is now enabled in the watchdog; all env-var reads use `${FOO:-default}` form. Typo'd env vars fail loudly.
+- **`jq` replaces `python3 -c "import json..."`** for reading `portal-state.json`. Faster, no shell-interpolated path, no per-read subprocess import cost. `jq` is installed by setup.sh.
+- **Daily counter reset moved out of the watchdog tick.** A new systemd unit `vpn-ap-reset-counters.timer` (`OnCalendar=daily`, `Persistent=true`) clears the counters. If the Pi is off at midnight, the persistent timer fires on next boot — the previous in-tick date-string compare silently skipped the reset.
+- **`get_default_route_interface` and `get_best_upstream`** removed from `watchdog.sh` and `start-vpn.sh`; both now use `select_upstream` from the shared lib.
+
+### Fixed
+- Eliminated 6 copies of link-only WAN detection that ignored reachability. With an mgmt-only eth0 (link up, no internet) the old code would wrongly pick eth0 and starve a working iPhone tether; the new helper probes the per-interface gateway.
+
+#### Bench-test fixes (caught while validating on a real Pi 4 + iPhone X running Pi OS Trixie 2026-04-21)
+- **Trixie package rename:** `libimobiledevice6` was renamed to `libimobiledevice-1.0-6`. Dropped the explicit line from the apt install lists in `setup.sh` and `setup-iphone-tether.sh`; `libimobiledevice-utils` now pulls in the correct versioned dependency on its own.
+- **`wpa_supplicant.service` vs. NetworkManager conflict:** on a fresh Pi OS Lite Trixie image the standalone `wpa_supplicant.service` owns `wlan0` exclusively and blocks NM from managing it. `setup.sh` now disables the standalone service.
+- **`setup-iphone-tether.sh` template path:** when invoked from `/usr/local/bin`, `$PROJECT_DIR` resolved to `/usr/local` which didn't contain the udev template. `setup.sh` now installs the template to `/usr/local/lib/vpn-ap/udev-templates/` and `setup-iphone-tether.sh` searches that path plus the dev-tree location.
+- **Already-plugged-in iPhone:** if `usbmuxd` is installed *after* the iPhone is plugged in, its udev rule has already missed the `ACTION=="add"` event, so `/dev/bus/usb/<bus>/<dev>` stays root-owned and usbmuxd can't open it as the `usbmux` user. `setup-iphone-tether.sh` now does a `udevadm trigger --action=add` plus a safety-net chown of any Apple USB device already enumerated, then restarts usbmuxd.
+- **Idempotency:** added an early-exit at the top of `setup-iphone-tether.sh` so re-running it on an already-configured Pi prints a friendly note and leaves the interface alone instead of bouncing it.
+
+### Documentation
+- Documented the `run_cmd` vs `run_cmd_safe` split in `captive-portal-server.py` so future callers don't accidentally funnel user input (SSIDs, passwords) through the shell-quoted path.
+
 ## [1.4.0] - 2026-02-21
 
 ### Fixed

@@ -7,7 +7,7 @@ Type=oneshot
 
 # Default values (overridden by EnvironmentFile)
 Environment=VPN_INTERFACE=wg0
-Environment=UPSTREAM_INTERFACES="eth0 wlan0"
+Environment=UPSTREAM_INTERFACES="iphone0 eth0 wlan0"
 Environment=PROJECT_DIR=/home/pi/VPN-AP
 
 # Load configuration including PROJECT_DIR

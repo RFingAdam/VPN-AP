@@ -22,6 +22,11 @@ DNS = 103.86.96.100, 103.86.99.100
 
 # Optional: Set MTU for better performance
 MTU = 1420
+# NOTE: if your backhaul is cellular (iPhone USB tether / LTE hotspot) and you
+# see partial page loads or stalled large transfers, drop to 1280 which
+# reliably fits inside LTE MTUs without relying on PMTUD (often broken by
+# carrier middleboxes). Only lower when you actually see symptoms.
+# MTU = 1280
 
 [Peer]
 # NordVPN server's public key (from the dashboard)

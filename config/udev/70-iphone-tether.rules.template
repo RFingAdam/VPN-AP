@@ -1,0 +1,8 @@
+# VPN-AP: rename the iPhone USB-tether interface to a stable name `iphone0`.
+#
+# The {{IPHONE_MAC}} placeholder is replaced by scripts/setup-iphone-tether.sh
+# the first time you pair an iPhone. Apple's USB tether shows up as an
+# `enx<MAC>` interface (via the ipheth driver); giving it a predictable name
+# lets UPSTREAM_INTERFACES and everything downstream refer to it as iphone0.
+
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="{{IPHONE_MAC}}", NAME="iphone0"

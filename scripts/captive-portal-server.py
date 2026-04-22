@@ -122,7 +122,18 @@ def log(msg, level="INFO"):
 
 
 def run_cmd(cmd, timeout=30):
-    """Run a shell command and return output"""
+    """Run a shell pipeline and return (stdout, returncode).
+
+    SECURITY INVARIANT: callers must only pass string literals or
+    interpolations of INTERNAL values (config vars like UPSTREAM_IF, service
+    names, hardcoded command shapes). User-supplied data (SSIDs, passwords,
+    connection names chosen by the user) MUST go through run_cmd_safe() below,
+    which uses argv lists with shell=False.
+
+    This split exists because several callers rely on shell features (pipes,
+    redirects, awk, sed). Refactoring those to argv form is tracked as a
+    follow-up; until then, every new caller should audit its inputs.
+    """
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True,
                                 text=True, timeout=timeout)

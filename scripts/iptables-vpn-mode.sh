@@ -22,14 +22,25 @@ fi
 [ -f /etc/default/vpn-ap ] && . /etc/default/vpn-ap
 HALOW_IF="${HALOW_INTERFACE:-wlan2}"
 
-# Auto-detect upstream interface (including HaLow)
-if ip link show eth0 2>/dev/null | grep -q "state UP"; then
-    UPSTREAM_IF="eth0"
-elif ip link show wlan0 2>/dev/null | grep -q "state UP"; then
-    UPSTREAM_IF="wlan0"
-elif ip link show "$HALOW_IF" 2>/dev/null | grep -q "state UP"; then
-    UPSTREAM_IF="$HALOW_IF"
-    echo "  Note: Using HaLow ($HALOW_IF) as upstream"
+# Source shared upstream helper (select_upstream / upstream_iface_ready / ...)
+_VPN_AP_LIB="${VPN_AP_LIB:-/usr/local/lib/vpn-ap}"
+[ -r "$_VPN_AP_LIB/upstream.sh" ] || _VPN_AP_LIB="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/lib"
+# shellcheck source=lib/upstream.sh
+. "$_VPN_AP_LIB/upstream.sh"
+
+# Extend candidates with HaLow only when explicitly enabled (preserves legacy fallback)
+if [ "${HALOW_ENABLED:-0}" = "1" ] && [ -n "$HALOW_IF" ]; then
+    case " $UPSTREAM_INTERFACES " in
+        *" $HALOW_IF "*) ;;
+        *) UPSTREAM_INTERFACES="$UPSTREAM_INTERFACES $HALOW_IF" ;;
+    esac
+fi
+
+# Auto-detect upstream interface
+DETECTED_UPSTREAM="$(select_upstream 2>/dev/null || true)"
+if [ -n "$DETECTED_UPSTREAM" ]; then
+    UPSTREAM_IF="$DETECTED_UPSTREAM"
+    [ "$UPSTREAM_IF" = "$HALOW_IF" ] && echo "  Note: Using HaLow ($HALOW_IF) as upstream"
 fi
 
 echo "Setting up VPN kill switch mode..."
@@ -94,6 +105,9 @@ iptables-restore <<RULES
 # Forward AP traffic ONLY through VPN (kill switch - no direct upstream)
 -A FORWARD -i $AP_IF -o $VPN_IF -j ACCEPT
 -A FORWARD -i $VPN_IF -o $AP_IF -j ACCEPT
+
+# Clamp TCP MSS to path MTU (avoids PMTUD black holes on cellular/LTE uplinks)
+-A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 
 COMMIT
 
