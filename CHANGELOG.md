@@ -2,6 +2,43 @@
 
 All notable changes to VPN-AP will be documented in this file.
 
+## [1.6.0] - 2026-04-22
+
+### Added
+
+#### Dual-band AP on a single Pi — switchable at runtime
+- **`scripts/vpn-ap-mode.sh`** (installed as `/usr/local/bin/vpn-ap-mode`) — new CLI to switch AP radio layouts without rebooting:
+  - `vpn-ap-mode single` — one AP on the USB adapter (`wlan1`, 2.4 GHz). `wlan0` stays free to be an upstream WiFi client (home-network backhaul). Same behaviour as v1.5.0.
+  - `vpn-ap-mode dual` — two APs on different radios: `wlan0` at 2.4 GHz (SSID `TravelRouter`, 192.168.4.0/24) for long range, `wlan1` at 5 GHz 80 MHz-wide (SSID `TravelRouter-5G`, 192.168.5.0/24) for speed. `wlan0` is released from NetworkManager in this mode, so the Pi needs iPhone USB tether, Ethernet, or HaLow for upstream.
+  - `vpn-ap-mode status` — shows current mode, per-interface AP instance state, IPs, dnsmasq state, and active upstream.
+- **New systemd template unit** `vpn-ap-hostapd@.service` (e.g. `vpn-ap-hostapd@wlan0`, `vpn-ap-hostapd@wlan1`) reads a runtime-rendered config from `/run/vpn-ap/hostapd-%i.conf`. Replaces single-instance `hostapd.service` for VPN-AP-managed APs; the stock unit is disabled by `vpn-ap-mode single` to prevent a fight over the interface.
+- **`config/hostapd-5g.conf`** — 5 GHz AP template used in dual mode (ch 36 primary, 80 MHz VHT centered on ch 42, HT40+). Installed to `/etc/hostapd/hostapd-5g.conf` on first setup; user-editable for SSID/password.
+- **`config/dnsmasq-dual.conf`** — dnsmasq config that serves DHCP on both `wlan0` (192.168.4.0/24) and `wlan1` (192.168.5.0/24) with tagged ranges. Installed to `/usr/local/lib/vpn-ap/` and copied into `/etc/dnsmasq.d/` by `vpn-ap-mode dual`.
+
+### Changed
+
+#### Mode-aware iptables generation (`scripts/iptables-*-mode.sh`)
+- All three firewall-mode scripts now iterate over `AP_INTERFACES` and `AP_SUBNETS` (space-separated lists written by `vpn-ap-mode`) instead of the single legacy `AP_IF` / `AP_SUBNET` pair. In single-AP mode the new variables fall back to the legacy single values, so existing installs keep working unchanged.
+- FORWARD and MASQUERADE rules are now emitted per-AP-interface and per-AP-subnet — both SSIDs get identical NAT and forwarding treatment through whatever upstream is active.
+- Captive-mode PREROUTING DNAT now targets the correct gateway IP per AP subnet (computed as `x.x.x.1` for each `AP_SUBNETS` entry).
+
+#### Watchdog awareness (`scripts/watchdog.sh`)
+- `check_ap_interface` and `recover_ap_interface` iterate over all configured AP interfaces and verify each has its expected `x.x.x.1` gateway IP.
+- `check_hostapd` and `recover_hostapd` use the template unit (`vpn-ap-hostapd@<iface>`) in dual mode and fall back to the stock `hostapd.service` in single mode for backward compatibility with pre-v1.6 installs.
+- `ensure_management_access` re-inserts critical INPUT ACCEPTs for port 80 / DHCP / DNS on every `AP_INTERFACES` entry, so both SSIDs keep portal and DHCP reachable under any firewall mode.
+
+#### `scripts/vpn-ap-mode.sh` safety hardening (found during bench test)
+- `systemctl reset-failed` before restarting the AP instances so a prior failure doesn't poison the next start ("Start request repeated too quickly").
+- `pkill` for any hostapd processes that survived a previous bad shutdown, to avoid the nl80211 "Operation already in progress" error on restart.
+- Single-mode switch moves the dual-mode dnsmasq config to a sidecar directory (`/etc/vpn-ap/dnsmasq-inactive/`) rather than renaming in place, because dnsmasq reads every file in `/etc/dnsmasq.d/` regardless of extension — the previous in-place rename caused "illegal repeated keyword" errors.
+
+### Bench-tested end-to-end
+- Started from v1.5.0 DUT state (Pi 4 + iPhone X + Alfa AWUS036ACM (MT7612U), Pi OS Trixie 2026-04-21).
+- Confirmed MT7612U is single-radio dual-band (`#channels <= 1` in `iw phy` interface combinations) — dual-band-from-one-adapter isn't possible, hence the split across `wlan0` (built-in) and `wlan1` (Alfa).
+- `vpn-ap-mode dual`: both SSIDs broadcasting (`TravelRouter` ch 6, `TravelRouter-5G` ch 40 80 MHz). `iptables -t nat -S POSTROUTING` shows MASQUERADE for both subnets through `iphone0`. `iw dev` reports `type AP` on both radios.
+- `vpn-ap-mode single`: wlan0 returns to `type managed`, wlan1 AP on ch 6, dual-mode dnsmasq removed, legacy single config restored.
+- Round-trip `dual → single → dual` clean; no stale state.
+
 ## [1.5.0] - 2026-04-22
 
 ### Added

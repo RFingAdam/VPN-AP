@@ -7,7 +7,11 @@
 VPN_IF="${VPN_IF:-nordlynx}"
 AP_IF="${AP_IF:-wlan1}"
 UPSTREAM_IF="${UPSTREAM_IF:-wlan0}"
-AP_SUBNET="192.168.4.0/24"
+
+# AP_INTERFACES / AP_SUBNETS govern multi-AP mode (set by vpn-ap-mode). Fall
+# back to the legacy single-AP values so old configs keep working unchanged.
+AP_INTERFACES="${AP_INTERFACES:-$AP_IF}"
+AP_SUBNETS="${AP_SUBNETS:-192.168.4.0/24}"
 
 # Auto-detect VPN interface if nordlynx doesn't exist
 if ! ip link show $VPN_IF &>/dev/null; then
@@ -44,9 +48,35 @@ if [ -n "$DETECTED_UPSTREAM" ]; then
 fi
 
 echo "Setting up VPN kill switch mode..."
-echo "  VPN Interface: $VPN_IF"
-echo "  AP Interface: $AP_IF"
-echo "  Upstream Interface: $UPSTREAM_IF"
+echo "  VPN Interface:    $VPN_IF"
+echo "  AP Interfaces:    $AP_INTERFACES"
+echo "  AP Subnets:       $AP_SUBNETS"
+echo "  Upstream:         $UPSTREAM_IF"
+
+# Build per-AP-interface filter rules
+AP_FILTER_RULES=""
+for _ap in $AP_INTERFACES; do
+    AP_FILTER_RULES="$AP_FILTER_RULES
+# --- AP interface: $_ap ---
+-A INPUT -i $_ap -p udp --dport 67 -j ACCEPT
+-A OUTPUT -o $_ap -p udp --sport 67 -j ACCEPT
+-A INPUT -i $_ap -p udp --dport 53 -j ACCEPT
+-A INPUT -i $_ap -p tcp --dport 53 -j ACCEPT
+-A OUTPUT -o $_ap -p udp --sport 53 -j ACCEPT
+-A OUTPUT -o $_ap -p tcp --sport 53 -j ACCEPT
+-A INPUT -i $_ap -p tcp --dport 80 -j ACCEPT
+-A INPUT -i $_ap -p icmp --icmp-type echo-request -j ACCEPT
+-A OUTPUT -o $_ap -p icmp --icmp-type echo-reply -j ACCEPT
+-A FORWARD -i $_ap -o $VPN_IF -j ACCEPT
+-A FORWARD -i $VPN_IF -o $_ap -j ACCEPT"
+done
+
+# Build per-AP-subnet NAT rules
+AP_NAT_RULES=""
+for _subnet in $AP_SUBNETS; do
+    AP_NAT_RULES="$AP_NAT_RULES
+-A POSTROUTING -s $_subnet -o $VPN_IF -j MASQUERADE"
+done
 
 # Load all rules atomically via iptables-restore
 iptables-restore <<RULES
@@ -67,44 +97,16 @@ iptables-restore <<RULES
 # === CRITICAL: SSH on ALL interfaces (prevent lockout) ===
 -A INPUT -p tcp --dport 22 -j ACCEPT
 -A OUTPUT -p tcp --sport 22 -j ACCEPT
-
-# DHCP server on AP interface
--A INPUT -i $AP_IF -p udp --dport 67 -j ACCEPT
--A OUTPUT -o $AP_IF -p udp --sport 67 -j ACCEPT
-
-# DNS server on AP interface (dnsmasq)
--A INPUT -i $AP_IF -p udp --dport 53 -j ACCEPT
--A INPUT -i $AP_IF -p tcp --dport 53 -j ACCEPT
--A OUTPUT -o $AP_IF -p udp --sport 53 -j ACCEPT
--A OUTPUT -o $AP_IF -p tcp --sport 53 -j ACCEPT
-
-# HTTP on AP interface (captive portal status page)
--A INPUT -i $AP_IF -p tcp --dport 80 -j ACCEPT
-
-# Ping on AP interface
--A INPUT -i $AP_IF -p icmp --icmp-type echo-request -j ACCEPT
--A OUTPUT -o $AP_IF -p icmp --icmp-type echo-reply -j ACCEPT
+$AP_FILTER_RULES
 
 # === UPSTREAM RULES (minimal - only VPN tunnel) ===
-
-# DHCP client (to maintain hotel IP)
 -A OUTPUT -o $UPSTREAM_IF -p udp --dport 67:68 --sport 67:68 -j ACCEPT
 -A INPUT -i $UPSTREAM_IF -p udp --sport 67:68 --dport 67:68 -j ACCEPT
-
-# NordVPN/WireGuard tunnel establishment (UDP)
 -A OUTPUT -o $UPSTREAM_IF -p udp -m conntrack --ctstate NEW -j ACCEPT
 
 # === VPN INTERFACE RULES ===
-
-# Allow ALL traffic through VPN tunnel
 -A INPUT -i $VPN_IF -j ACCEPT
 -A OUTPUT -o $VPN_IF -j ACCEPT
-
-# === FORWARDING RULES (AP clients through VPN ONLY) ===
-
-# Forward AP traffic ONLY through VPN (kill switch - no direct upstream)
--A FORWARD -i $AP_IF -o $VPN_IF -j ACCEPT
--A FORWARD -i $VPN_IF -o $AP_IF -j ACCEPT
 
 # Clamp TCP MSS to path MTU (avoids PMTUD black holes on cellular/LTE uplinks)
 -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
@@ -116,9 +118,7 @@ COMMIT
 :INPUT ACCEPT [0:0]
 :OUTPUT ACCEPT [0:0]
 :POSTROUTING ACCEPT [0:0]
-
-# NAT AP clients through VPN
--A POSTROUTING -s $AP_SUBNET -o $VPN_IF -j MASQUERADE
+$AP_NAT_RULES
 
 COMMIT
 RULES

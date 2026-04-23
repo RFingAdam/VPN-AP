@@ -1,0 +1,18 @@
+[Unit]
+Description=VPN-AP hostapd instance on %I
+# After network.target but before the captive-portal so portal binds after
+# the AP interface has an IP (static IPs are set by vpn-ap-mode before
+# starting this service).
+After=network.target
+ConditionPathExists=/run/vpn-ap/hostapd-%i.conf
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/hostapd /run/vpn-ap/hostapd-%i.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
