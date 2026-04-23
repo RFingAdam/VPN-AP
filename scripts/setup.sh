@@ -233,6 +233,13 @@ HALOW_SECURITY=sae                         # open, wpa2, or sae (WPA3)
 HALOW_COUNTRY=US                           # Regulatory domain: US, EU, JP, KR, etc.
 NRC_PKG_PATH=/home/pi/nrc_pkg              # Newracom SDK path (if using nrc_start_py)
 
+# AP mode — set to "single" for one AP on the USB adapter, "dual" for two
+# APs (wlan0 = 2.4 GHz, wlan1 = 5 GHz). Use \`vpn-ap-mode {single|dual|status}\`
+# to switch without hand-editing these values.
+AP_MODE=single
+AP_INTERFACES="wlan1"
+AP_SUBNETS="192.168.4.0/24"
+
 # Watchdog timing settings
 CHECK_INTERVAL=30
 AP_RESTART_COOLDOWN=60
@@ -262,6 +269,20 @@ cp "$PROJECT_DIR/config/udev/70-iphone-tether.rules.template" \
     /usr/local/lib/vpn-ap/udev-templates/70-iphone-tether.rules.template
 chmod 644 /usr/local/lib/vpn-ap/udev-templates/70-iphone-tether.rules.template
 
+# Install the 5 GHz hostapd template + dual-mode dnsmasq config used by
+# vpn-ap-mode when switching to dual-band.
+if [ ! -f /etc/hostapd/hostapd-5g.conf ]; then
+    cp "$CONFIG_DIR/hostapd-5g.conf" /etc/hostapd/hostapd-5g.conf
+    chmod 600 /etc/hostapd/hostapd-5g.conf
+fi
+cp "$CONFIG_DIR/dnsmasq-dual.conf" /usr/local/lib/vpn-ap/dnsmasq-dual.conf
+chmod 644 /usr/local/lib/vpn-ap/dnsmasq-dual.conf
+
+# Runtime directory for per-interface hostapd configs rendered by vpn-ap-mode.
+mkdir -p /run/vpn-ap
+chown root:root /run/vpn-ap
+chmod 755 /run/vpn-ap
+
 # Copy scripts to /usr/local/bin
 cp "$SCRIPT_DIR/start-ap.sh" /usr/local/bin/vpn-ap-start
 cp "$SCRIPT_DIR/start-vpn.sh" /usr/local/bin/vpn-start
@@ -271,6 +292,7 @@ cp "$SCRIPT_DIR/captive-portal.sh" /usr/local/bin/captive-portal
 cp "$SCRIPT_DIR/emergency-recovery.sh" /usr/local/bin/vpn-ap-emergency
 cp "$SCRIPT_DIR/watchdog.sh" /usr/local/bin/vpn-ap-watchdog
 cp "$SCRIPT_DIR/setup-iphone-tether.sh" /usr/local/bin/setup-iphone-tether
+cp "$SCRIPT_DIR/vpn-ap-mode.sh" /usr/local/bin/vpn-ap-mode
 cp "$SCRIPT_DIR/iptables-captive-mode.sh" /usr/local/bin/
 cp "$SCRIPT_DIR/iptables-internet-mode.sh" /usr/local/bin/
 cp "$SCRIPT_DIR/iptables-vpn-mode.sh" /usr/local/bin/
@@ -279,6 +301,7 @@ chmod +x /usr/local/bin/vpn-start
 chmod +x /usr/local/bin/vpn-stop
 chmod +x /usr/local/bin/captive-portal
 chmod +x /usr/local/bin/setup-iphone-tether
+chmod +x /usr/local/bin/vpn-ap-mode
 chmod +x /usr/local/bin/iptables-*.sh
 
 # Add restart policies for core services
@@ -314,6 +337,7 @@ cp "$PROJECT_DIR/systemd/vpn-ap-watchdog.service" /etc/systemd/system/
 cp "$PROJECT_DIR/systemd/vpn-ap-watchdog.timer" /etc/systemd/system/
 cp "$PROJECT_DIR/systemd/vpn-ap-reset-counters.service" /etc/systemd/system/
 cp "$PROJECT_DIR/systemd/vpn-ap-reset-counters.timer" /etc/systemd/system/
+cp "$PROJECT_DIR/systemd/vpn-ap-hostapd@.service" /etc/systemd/system/
 systemctl daemon-reload
 
 # Enable watchdog timer for auto-recovery and the daily counter reset

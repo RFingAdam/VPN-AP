@@ -19,6 +19,13 @@ UPSTREAM_IF="${UPSTREAM_IF:-wlan0}"
 MAX_RECOVERY_ATTEMPTS_PER_DAY=5    # Per-service attempt cap
 ESCALATE_AT_COUNT=3                 # hostapd attempts before escalation
 
+# AP_MODE governs single vs dual band AP. AP_INTERFACES / AP_SUBNETS carry
+# the per-interface layout set by `vpn-ap-mode`. Legacy single-AP fallbacks
+# keep old configs working if the file hasn't been re-written.
+AP_MODE="${AP_MODE:-single}"
+AP_INTERFACES="${AP_INTERFACES:-$AP_IF}"
+AP_SUBNETS="${AP_SUBNETS:-192.168.4.0/24}"
+
 # Ensure state directory exists
 mkdir -p "$STATE_DIR"
 
@@ -84,20 +91,54 @@ get_recovery_count() {
     cat "$STATE_DIR/${service}_recovery_count" 2>/dev/null || echo 0
 }
 
-# Check if AP interface is up and has the static IP.
-check_ap_interface() {
-    local ap_if="${AP_IF:-wlan1}"
-    if ! ip addr show "$ap_if" 2>/dev/null | grep -q "192.168.4.1"; then
-        log "WARN: AP interface $ap_if missing or wrong IP"
-        return 1
-    fi
-    return 0
+# Return the gateway IP for an AP subnet (first host — .1).
+_ap_gw_for_subnet() {
+    echo "$1" | awk -F/ '{print $1}' | awk -F. '{printf "%s.%s.%s.1\n", $1,$2,$3}'
 }
 
+# Check that each configured AP interface has its static gateway IP. Works
+# identically in single-AP and dual-AP mode.
+check_ap_interface() {
+    local iface subnet gw ok=0
+    # shellcheck disable=SC2206
+    local ifaces_arr=($AP_INTERFACES)
+    # shellcheck disable=SC2206
+    local subnets_arr=($AP_SUBNETS)
+    for i in "${!ifaces_arr[@]}"; do
+        iface="${ifaces_arr[$i]}"
+        subnet="${subnets_arr[$i]:-${subnets_arr[0]:-192.168.4.0/24}}"
+        gw=$(_ap_gw_for_subnet "$subnet")
+        if ! ip addr show "$iface" 2>/dev/null | grep -q "$gw"; then
+            log "WARN: AP interface $iface missing or wrong IP (expected $gw)"
+            ok=1
+        fi
+    done
+    return "$ok"
+}
+
+# In single-AP mode we still support the stock hostapd.service for backward
+# compatibility with pre-v1.6 installs. In dual-AP mode we rely on our
+# per-interface template units.
 check_hostapd() {
-    if ! sctl is-active --quiet hostapd; then
-        log "WARN: hostapd is not running"
-        return 1
+    if [ "$AP_MODE" = "dual" ]; then
+        local iface any_down=0
+        for iface in $AP_INTERFACES; do
+            if ! sctl is-active --quiet "vpn-ap-hostapd@$iface"; then
+                log "WARN: vpn-ap-hostapd@$iface is not running"
+                any_down=1
+            fi
+        done
+        if [ "$any_down" -eq 1 ]; then
+            return 1
+        fi
+    else
+        # Single mode: accept EITHER the stock hostapd.service or the
+        # vpn-ap-hostapd@<iface> template unit as authoritative.
+        if ! sctl is-active --quiet hostapd && \
+           ! sctl is-active --quiet "vpn-ap-hostapd@$AP_IF"; then
+            log "WARN: hostapd is not running (neither stock nor vpn-ap-hostapd@$AP_IF)"
+            return 1
+        fi
     fi
     if ! iw dev 2>/dev/null | grep -q "type AP"; then
         log "WARN: No AP mode interface detected"
@@ -290,7 +331,6 @@ maybe_restart_vpn_on_upstream_change() {
 }
 
 recover_ap_interface() {
-    local ap_if="${AP_IF:-wlan1}"
     local count
     count=$(increment_recovery_count "ap_interface")
     if [ "$count" -gt "$MAX_RECOVERY_ATTEMPTS_PER_DAY" ]; then
@@ -300,10 +340,23 @@ recover_ap_interface() {
 
     log "INFO: Attempting AP interface recovery (attempt $count)"
     rfkill unblock wifi 2>/dev/null || true
-    ip link set "$ap_if" up 2>/dev/null || true
-    sleep 1
-    ip addr flush dev "$ap_if" 2>/dev/null || true
-    ip addr add 192.168.4.1/24 dev "$ap_if" 2>/dev/null || true
+
+    # Re-apply the static gateway IP on every configured AP interface, using
+    # AP_SUBNETS to derive the right /24.1 for each.
+    # shellcheck disable=SC2206
+    local ifaces_arr=($AP_INTERFACES)
+    # shellcheck disable=SC2206
+    local subnets_arr=($AP_SUBNETS)
+    local i iface subnet gw
+    for i in "${!ifaces_arr[@]}"; do
+        iface="${ifaces_arr[$i]}"
+        subnet="${subnets_arr[$i]:-${subnets_arr[0]:-192.168.4.0/24}}"
+        gw=$(_ap_gw_for_subnet "$subnet")
+        ip link set "$iface" up 2>/dev/null || true
+        sleep 1
+        ip addr flush dev "$iface" 2>/dev/null || true
+        ip addr add "${gw}/24" dev "$iface" 2>/dev/null || true
+    done
     log "INFO: AP interface recovery completed"
     return 0
 }
@@ -316,15 +369,49 @@ recover_hostapd() {
         return 1
     fi
 
-    log "INFO: Attempting hostapd recovery (attempt $count)"
+    log "INFO: Attempting hostapd recovery (attempt $count, mode=$AP_MODE)"
+
+    if [ "$AP_MODE" = "dual" ]; then
+        local iface
+        for iface in $AP_INTERFACES; do
+            sctl stop "vpn-ap-hostapd@$iface" || true
+        done
+        sleep 1
+        recover_ap_interface
+        sleep 1
+        for iface in $AP_INTERFACES; do
+            sctl start "vpn-ap-hostapd@$iface"
+        done
+        sleep 2
+        local all_up=1
+        for iface in $AP_INTERFACES; do
+            sctl is-active --quiet "vpn-ap-hostapd@$iface" || all_up=0
+        done
+        if [ "$all_up" -eq 1 ]; then
+            log "INFO: hostapd recovery successful (dual mode)"
+            reset_recovery_count "hostapd"
+            return 0
+        fi
+        log "ERROR: hostapd recovery failed (dual mode)"
+        return 1
+    fi
+
+    # Single-mode path
     sctl stop hostapd || true
+    sctl stop "vpn-ap-hostapd@$AP_IF" || true
     sleep 1
     recover_ap_interface
     sleep 1
-    sctl start hostapd
+    # Prefer the template unit if it's enabled, else fall back to stock hostapd
+    if [ -L "/etc/systemd/system/multi-user.target.wants/vpn-ap-hostapd@${AP_IF}.service" ] || \
+       sctl list-unit-files "vpn-ap-hostapd@${AP_IF}.service" 2>/dev/null | grep -q enabled; then
+        sctl start "vpn-ap-hostapd@$AP_IF"
+    else
+        sctl start hostapd
+    fi
     sleep 2
 
-    if sctl is-active --quiet hostapd; then
+    if sctl is-active --quiet hostapd || sctl is-active --quiet "vpn-ap-hostapd@$AP_IF"; then
         log "INFO: hostapd recovery successful"
         reset_recovery_count "hostapd"
         return 0
@@ -427,14 +514,22 @@ ensure_ssh_access() {
 }
 
 ensure_management_access() {
-    local ap_if="${AP_IF:-wlan1}"
     ensure_ssh_access
-    ipt -D INPUT -i "$ap_if" -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
-    ipt -I INPUT 2 -i "$ap_if" -p tcp --dport 80 -j ACCEPT
-    ipt -D INPUT -i "$ap_if" -p udp --dport 67 -j ACCEPT 2>/dev/null || true
-    ipt -I INPUT 3 -i "$ap_if" -p udp --dport 67 -j ACCEPT
-    ipt -D INPUT -i "$ap_if" -p udp --dport 53 -j ACCEPT 2>/dev/null || true
-    ipt -I INPUT 4 -i "$ap_if" -p udp --dport 53 -j ACCEPT
+    # Re-insert critical portal + DHCP + DNS ACCEPTs on every AP interface.
+    # Delete-before-insert prevents rule accumulation across watchdog ticks.
+    local ap_if
+    local slot=2
+    for ap_if in $AP_INTERFACES; do
+        ipt -D INPUT -i "$ap_if" -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+        ipt -I INPUT "$slot" -i "$ap_if" -p tcp --dport 80 -j ACCEPT
+        slot=$((slot + 1))
+        ipt -D INPUT -i "$ap_if" -p udp --dport 67 -j ACCEPT 2>/dev/null || true
+        ipt -I INPUT "$slot" -i "$ap_if" -p udp --dport 67 -j ACCEPT
+        slot=$((slot + 1))
+        ipt -D INPUT -i "$ap_if" -p udp --dport 53 -j ACCEPT 2>/dev/null || true
+        ipt -I INPUT "$slot" -i "$ap_if" -p udp --dport 53 -j ACCEPT
+        slot=$((slot + 1))
+    done
 }
 
 main() {
