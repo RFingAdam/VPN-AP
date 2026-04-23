@@ -26,6 +26,23 @@ ExecStart=/usr/local/bin/vpn-ap-start
 # Start captive portal web interface
 ExecStartPost=/bin/systemctl start captive-portal
 
+# Enforce the final firewall mode AFTER captive-portal has finished booting.
+# captive-portal-server.py applies captive-mode iptables on startup (by design
+# for the hotel-WiFi onboarding flow), which flushes our forwarding rules.
+# VPN_AP_BOOT_MODE in /etc/default/vpn-ap chooses the final desired state:
+#   captive  — leave captive-portal's rules alone (v1.4.0 default flow)
+#   internet — re-apply iptables-internet-mode so AP clients have internet
+#              with NO VPN (useful for no-VPN deployments, e.g. iPhone tether
+#              upstream without NordVPN configured)
+#   vpn      — expects VPN is configured separately; iptables-vpn-mode
+#              applies the kill-switch
+# Short sleep gives captive-portal time to finish its iptables-captive-mode run.
+ExecStartPost=/bin/bash -c 'sleep 3; case "${VPN_AP_BOOT_MODE:-captive}" in \
+    internet) /usr/local/bin/iptables-internet-mode.sh ;; \
+    vpn)      /usr/local/bin/iptables-vpn-mode.sh ;; \
+    *) ;; \
+  esac'
+
 # Note: VPN is NOT auto-started - user configures WiFi via captive portal first
 # The captive portal will connect VPN after WiFi is configured
 
