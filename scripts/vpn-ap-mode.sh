@@ -121,6 +121,53 @@ write_ap_interfaces_to_defaults() {
     fi
 }
 
+# Strip any of the given interfaces out of the UPSTREAM_INTERFACES line in
+# /etc/default/vpn-ap. Used in dual mode — an interface acting as an AP
+# cannot simultaneously be a client upstream, and leaving it in the list
+# lets select_upstream wrongly pick it if higher-priority candidates vanish.
+strip_from_upstream_interfaces() {
+    local to_strip="$1"   # space-separated list
+    local raw new line
+    line=$(grep '^UPSTREAM_INTERFACES=' "$DEFAULTS" 2>/dev/null | head -1) || true
+    [ -n "$line" ] || return 0
+    raw=$(echo "$line" | sed 's/^UPSTREAM_INTERFACES=//; s/^"//; s/"$//')
+    new=""
+    local tok keep
+    for tok in $raw; do
+        keep=1
+        for skip in $to_strip; do
+            [ "$tok" = "$skip" ] && keep=0 && break
+        done
+        [ "$keep" -eq 1 ] && new="$new $tok"
+    done
+    # trim leading space
+    new="${new# }"
+    [ -n "$new" ] || new="iphone0 eth0"   # safe default if everything stripped
+    sed -i "s|^UPSTREAM_INTERFACES=.*|UPSTREAM_INTERFACES=\"$new\"|" "$DEFAULTS"
+}
+
+# Ensure the given interfaces are present in UPSTREAM_INTERFACES (appended
+# if missing). Used when leaving dual mode to restore wlan0 as a potential
+# upstream again.
+ensure_in_upstream_interfaces() {
+    local to_add="$1"
+    local line raw new tok
+    line=$(grep '^UPSTREAM_INTERFACES=' "$DEFAULTS" 2>/dev/null | head -1) || true
+    if [ -z "$line" ]; then
+        echo "UPSTREAM_INTERFACES=\"iphone0 eth0 $to_add\"" >> "$DEFAULTS"
+        return 0
+    fi
+    raw=$(echo "$line" | sed 's/^UPSTREAM_INTERFACES=//; s/^"//; s/"$//')
+    new="$raw"
+    for tok in $to_add; do
+        case " $raw " in
+            *" $tok "*) ;;
+            *) new="$new $tok" ;;
+        esac
+    done
+    sed -i "s|^UPSTREAM_INTERFACES=.*|UPSTREAM_INTERFACES=\"$new\"|" "$DEFAULTS"
+}
+
 switch_to_single() {
     echo -e "${GREEN}Switching to SINGLE-AP mode (wlan1 = 2.4 GHz, wlan0 free for upstream)${NC}"
     stop_all_aps
@@ -129,13 +176,23 @@ switch_to_single() {
     ip addr flush dev wlan0 2>/dev/null || true
 
     # Restore NM control of wlan0 so home-WiFi connection can come back.
+    # NM takes a moment to re-pick up the device after `managed yes`; retry
+    # the connection-up a few times before warning the user.
     if command -v nmcli >/dev/null 2>&1; then
         nmcli device set wlan0 managed yes 2>/dev/null || true
         local conn
         conn=$(detect_nm_wlan0_conn)
         if [ -n "$conn" ]; then
-            nmcli connection up "$conn" ifname wlan0 2>/dev/null || \
-                echo -e "  ${YELLOW}(could not bring up '$conn' on wlan0 — you can start it manually)${NC}"
+            local _t
+            for _t in 1 2 3 4 5; do
+                if nmcli connection up "$conn" ifname wlan0 2>/dev/null; then
+                    break
+                fi
+                sleep 2
+            done
+            if ! nmcli -t -f GENERAL.STATE device show wlan0 2>/dev/null | grep -q ":100 (connected)"; then
+                echo -e "  ${YELLOW}(could not auto-bring-up '$conn' on wlan0; run 'nmcli connection up $conn' manually)${NC}"
+            fi
         fi
     fi
 
@@ -163,6 +220,8 @@ switch_to_single() {
         systemctl start "vpn-ap-hostapd@$AP_SINGLE_IFACE"
 
     write_ap_interfaces_to_defaults "single" "$AP_SINGLE_IFACE" "192.168.4.0/24"
+    # wlan0 is no longer an AP — restore it as a valid upstream candidate.
+    ensure_in_upstream_interfaces "wlan0"
 
     # Re-apply firewall so FORWARD/NAT know about the new AP layout.
     if [ -x "$IPTABLES_INTERNET" ]; then
@@ -224,6 +283,11 @@ switch_to_dual() {
         systemctl start "vpn-ap-hostapd@$AP_24_IFACE" "vpn-ap-hostapd@$AP_5G_IFACE"
 
     write_ap_interfaces_to_defaults "dual" "$AP_24_IFACE $AP_5G_IFACE" "192.168.4.0/24 192.168.5.0/24"
+    # wlan0 is now an AP — it must not appear in the upstream selection
+    # candidate list. select_upstream would wrongly pick it if iphone0/eth0
+    # are unavailable and then start-vpn would try to route through a
+    # no-gateway AP interface.
+    strip_from_upstream_interfaces "$AP_24_IFACE $AP_5G_IFACE"
 
     if [ -x "$IPTABLES_INTERNET" ]; then
         "$IPTABLES_INTERNET" || true
