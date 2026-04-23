@@ -153,7 +153,9 @@ check_dnsmasq() {
         return 1
     fi
     # Every 5th minute, verify DNS actually resolves (only if we have an upstream).
-    if [ $(( $(date +%M) % 5 )) -eq 0 ] && check_upstream; then
+    # 10#$min forces decimal parsing — bash treats leading-zero strings like
+    # "08" and "09" as invalid octal, which crashed the watchdog at :08 and :09.
+    if [ $(( 10#$(date +%M) % 5 )) -eq 0 ] && check_upstream; then
         if ! timeout 3 nslookup google.com 192.168.4.1 >/dev/null 2>&1; then
             log "WARN: dnsmasq running but DNS resolution failed"
             return 1
@@ -620,7 +622,7 @@ main() {
 
     if [ "$issues_found" -eq 0 ]; then
         # Only log healthy status every 10 minutes to reduce noise.
-        if [ $(( $(date +%M) % 10 )) -eq 0 ]; then
+        if [ $(( 10#$(date +%M) % 10 )) -eq 0 ]; then
             log "INFO: All services healthy"
         fi
     fi
