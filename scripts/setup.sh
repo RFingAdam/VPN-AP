@@ -240,6 +240,16 @@ AP_MODE=single
 AP_INTERFACES="wlan1"
 AP_SUBNETS="192.168.4.0/24"
 
+# Boot-time firewall mode. Determines what iptables state the Pi lands in
+# after vpn-ap.service finishes booting.
+#   captive  — hotel-WiFi onboarding mode (default, v1.4.0 behaviour).
+#              Portal DNS-redirects clients until you tell it to connect.
+#   internet — no VPN; AP clients have direct internet through the picked
+#              upstream. Useful when your upstream is already trusted (e.g.
+#              iPhone USB tether at home, no NordVPN).
+#   vpn      — VPN kill-switch mode. Requires VPN configured; skipped if not.
+VPN_AP_BOOT_MODE=captive
+
 # Watchdog timing settings
 CHECK_INTERVAL=30
 AP_RESTART_COOLDOWN=60

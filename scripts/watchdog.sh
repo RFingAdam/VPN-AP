@@ -316,9 +316,29 @@ maybe_restart_vpn_on_upstream_change() {
     last_upstream="$(cat "$STATE_DIR/last_upstream" 2>/dev/null || echo "")"
 
     if [ -n "$last_upstream" ] && [ "$current_upstream" != "$last_upstream" ]; then
+        log "INFO: Upstream changed from ${last_upstream} to ${current_upstream}"
+
+        # Re-apply the right iptables mode. Without this, FORWARD/MASQUERADE
+        # rules stay pinned to the OLD upstream interface and AP clients lose
+        # internet. VPN_AP_BOOT_MODE decides which mode is authoritative.
+        local mode="${VPN_AP_BOOT_MODE:-captive}"
+        case "$mode" in
+            internet)
+                if [ -x /usr/local/bin/iptables-internet-mode.sh ]; then
+                    /usr/local/bin/iptables-internet-mode.sh >/dev/null 2>&1 || \
+                        log "ERROR: iptables-internet-mode.sh failed after upstream change"
+                    log "INFO: Re-applied iptables-internet-mode for new upstream"
+                fi
+                ;;
+            vpn)
+                # Fall through to VPN restart below; it calls iptables-vpn-mode internally.
+                ;;
+        esac
+
+        # Restart VPN if it was up, to bind to the new upstream.
         if check_vpn; then
             if [ -x "$VPN_START_CMD" ]; then
-                log "INFO: Upstream changed from ${last_upstream} to ${current_upstream}. Restarting VPN..."
+                log "INFO: Restarting VPN after upstream change..."
                 VPN_FORCE_RECONNECT=1 "$VPN_START_CMD" >/dev/null 2>&1 || \
                     log "ERROR: VPN restart failed after upstream change"
             else
