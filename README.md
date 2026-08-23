@@ -526,3 +526,10 @@ The system maintains state for recovery in `/var/lib/vpn-ap/`:
 ## License
 
 MIT License
+
+## Brand assets
+
+The project name and the logo files in this repository are not part of the licensed
+work. The licence above grants no permission to use them, except as needed to describe
+the origin of the work.
+
