@@ -307,7 +307,7 @@ The system includes multiple layers of automatic recovery:
 
 | Component | Recovery Mechanism |
 |-----------|-------------------|
-| **WiFi Connection** | 3 retry attempts with different strategies (normal → rescan → interface reset) |
+| **WiFi Connection** | 3 retry attempts with different strategies (normal -> rescan -> interface reset) |
 | **VPN Connection** | Tries 6 different servers, 3 attempts each |
 | **Services (hostapd, dnsmasq, portal)** | Watchdog checks every minute, auto-restarts if down |
 | **WiFi Drops** | Watchdog detects and reconnects to last known network with exponential backoff |
@@ -319,8 +319,8 @@ The system includes multiple layers of automatic recovery:
 
 The kill switch ensures your traffic is always protected:
 
-- **FORWARD rules** only allow `wlan1 ↔ nordlynx` (VPN interface)
-- Direct forwarding `wlan1 ↔ wlan0` is **blocked**
+- **FORWARD rules** only allow `wlan1 <-> nordlynx` (VPN interface)
+- Direct forwarding `wlan1 <-> wlan0` is **blocked**
 - If VPN disconnects, client traffic has nowhere to go
 - Pi can still reach upstream (to reconnect VPN)
 
